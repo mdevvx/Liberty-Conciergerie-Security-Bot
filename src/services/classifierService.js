@@ -1,0 +1,122 @@
+// src/services/classifierService.js
+// ─────────────────────────────────────────────────────────────────────────────
+// Two-stage message classification:
+//   Stage 1 — cheap local pre-filter (regex + length check)
+//   Stage 2 — Claude API (Haiku) for anything that passes stage 1
+//
+// Only messages that get past the pre-filter hit the API, cutting costs 60-80%.
+// ─────────────────────────────────────────────────────────────────────────────
+
+import Anthropic from '@anthropic-ai/sdk';
+import { config } from '../config/config.js';
+import { CLASSIFICATION } from '../config/constants.js';
+import logger from '../utils/logger.js';
+
+const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
+
+// ── Stage 1: Pre-filter ───────────────────────────────────────────────────────
+// Returns true if the message should be sent to the API for classification.
+// Returns false if it can be safely skipped (clearly normal messages).
+
+const PROMO_PATTERNS = [
+  /discord\.gg\//i,
+  /t\.me\//i,
+  /whatsapp\.com\//i,
+  /wa\.me\//i,
+  /instagram\.com\//i,
+  /check\s+out\s+my/i,
+  /free\s+money/i,
+  /\bdm\s+me\b/i,
+  /link\s+in\s+(bio|profile)/i,
+  /\bpromo\s+code\b/i,
+  /\bjoin\s+my\s+server\b/i,
+  /\bsubscribe\b/i,
+  /\bfollowers?\b.*\bfree\b/i,
+  // French-specific promo patterns
+  /rejoignez?\s+mon/i,
+  /mon\s+groupe/i,
+  /\bgagnez?\b/i,
+  /\bgén[eé]r[eé]\b/i,
+];
+
+// Matches any bare domain/path URL (e.g. chat.whatsapp.com/xxx, t.me/xyz)
+const URL_PATTERN = /[a-zA-Z0-9-]+\.[a-zA-Z]{2,}\/\S+/;
+
+/**
+ * Quick local check — no API call.
+ * @param {string} content
+ * @returns {boolean} true = send to Claude, false = skip
+ */
+function shouldClassify(content) {
+  // Very short messages are almost never spam
+  if (content.length < 15) return false;
+
+  // Promo pattern match → send to Claude
+  for (const pattern of PROMO_PATTERNS) {
+    if (pattern.test(content)) return true;
+  }
+
+  // Any URL-like pattern (with or without http://) → send to Claude
+  if (URL_PATTERN.test(content)) return true;
+
+  // Lots of caps → send to Claude
+  const capsRatio = (content.match(/[A-Z]/g) || []).length / content.length;
+  if (capsRatio > 0.5) return true;
+
+  // All other messages over 15 chars go to Claude.
+  // Haiku is cheap enough that missing a toxic message costs more than the API call.
+  return true;
+}
+
+// ── Stage 2: Claude classification ───────────────────────────────────────────
+
+// System prompt is defined outside the function so it can be cached by the SDK
+const SYSTEM_PROMPT = `You are a content moderator for a professional Discord community.
+Classify the message below as exactly one of:
+  SAFE    — normal community message, no issues
+  SUSPECT — self-promotion, off-topic spam, borderline content, or suspicious links
+  TOXIC   — hate speech, harassment, threats, slurs, or clearly harmful content
+
+Reply with ONLY the classification word. No explanation. No punctuation. Just one word.`;
+
+/**
+ * Classify a message using Claude Haiku.
+ * Returns CLASSIFICATION.SAFE | SUSPECT | TOXIC
+ * Falls back to SAFE on API error (fail-open — don't punish users for API issues).
+ *
+ * @param {string} content
+ * @returns {Promise<string>}
+ */
+export async function classifyMessage(content) {
+  // Stage 1 — pre-filter
+  if (!shouldClassify(content)) {
+    return CLASSIFICATION.SAFE;
+  }
+
+  // Stage 2 — Claude API
+  try {
+    const response = await anthropic.messages.create({
+      model: config.anthropic.model,
+      max_tokens: config.anthropic.maxTokens,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content }],
+    });
+
+    const result = response.content[0]?.text?.trim().toUpperCase();
+
+    // Validate the response is one of our expected values
+    if (Object.values(CLASSIFICATION).includes(result)) {
+      logger.info(`🔍 Classified: "${content.slice(0, 40)}..." → ${result}`);
+      return result;
+    }
+
+    // Unexpected response — default to SAFE
+    logger.warn(`Unexpected classification response: "${result}" — defaulting to SAFE`);
+    return CLASSIFICATION.SAFE;
+
+  } catch (err) {
+    // On API failure, fail open (don't shadowban innocent users due to API issues)
+    logger.error('Claude classification API error', { error: err.message });
+    return CLASSIFICATION.SAFE;
+  }
+}
