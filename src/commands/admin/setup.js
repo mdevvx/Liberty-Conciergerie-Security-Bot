@@ -1,131 +1,286 @@
 // src/commands/admin/setup.js
 // ─────────────────────────────────────────────────────────────────────────────
-// /setup — Fully automated server setup.
-// Creates everything the shadowban system needs in one command:
-//   • Shadowed role  (hidden, dark colour, no extra perms)
-//   • 🔒 Shadow Zone category  (invisible to @everyone, visible to Shadowed)
-//   • #shadow-hold channel inside that category
-//   • #mod-queue channel  (invisible to everyone except admins)
-// All IDs are saved to Supabase. Safe to re-run — role is reused if it exists.
+// /setup — Add one group at a time to the shadow system.
+//
+// Step 1 (execute):          Pick ONE category from a dropdown.
+// Step 2 (handleCategorySelect): Message updates in-place to show a role picker
+//                                for that category.
+// Step 3 (handleRoleSelect): Bot creates:
+//   • "Shadowed <RoleName>" shadow role (reused if it exists)
+//   • "🔒 <Category Name>" shadow category visible only to the shadow role
+//   • One mirror text channel per channel inside the category
+//   • #mod-queue (reused if it already exists)
+//   • Upserts channel + role mappings — does NOT wipe other groups
+//
+// Run /setup again to add the next group.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SlashCommandBuilder, PermissionFlagsBits, ChannelType } from 'discord.js';
-import { upsertGuildSettings } from '../../services/supabase.js';
-import { successEmbed, errorEmbed } from '../../utils/embed.js';
+import {
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  ChannelType,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  RoleSelectMenuBuilder,
+  MessageFlags,
+} from 'discord.js';
+import {
+  upsertGuildSettings,
+  getGuildSettings,
+  upsertChannelMappings,
+} from '../../services/supabase.js';
+import { successEmbed, errorEmbed, infoEmbed } from '../../utils/embed.js';
 import { EMOJI } from '../../config/constants.js';
 import logger from '../../utils/logger.js';
 
-const SHADOW_ROLE_NAME = 'Shadowed';
-
 export const data = new SlashCommandBuilder()
   .setName('setup')
-  .setDescription('Auto-create the Shadowed role, shadow category, and mod queue for this server')
+  .setDescription('Add a group to the shadow system — pick a category, then its group role')
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 1 — Pick a category (single select)
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function execute(interaction) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const { guild } = interaction;
 
-  try {
-    // ── Step 1: Create or reuse the Shadowed role ─────────────────────────────
-    let shadowedRole = guild.roles.cache.find((r) => r.name === SHADOW_ROLE_NAME);
-    const roleCreated = !shadowedRole;
+  await guild.channels.fetch();
 
-    if (!shadowedRole) {
-      shadowedRole = await guild.roles.create({
-        name: SHADOW_ROLE_NAME,
+  const categories = guild.channels.cache.filter(
+    (c) => c.type === ChannelType.GuildCategory,
+  );
+
+  if (categories.size === 0) {
+    return interaction.editReply({
+      embeds: [errorEmbed('No Categories Found', 'This server has no categories. Create at least one before running setup.')],
+    });
+  }
+
+  const options = [...categories.values()]
+    .slice(0, 25)
+    .map((cat) => {
+      const count = guild.channels.cache.filter((c) => c.parentId === cat.id).size;
+      return {
+        label: cat.name.slice(0, 100),
+        value: cat.id,
+        description: `${count} channel${count !== 1 ? 's' : ''}`,
+      };
+    });
+
+  const row = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('setup_cat_select')
+      .setPlaceholder('Pick a category to shadow...')
+      .setMinValues(1)
+      .setMaxValues(1)
+      .addOptions(options),
+  );
+
+  return interaction.editReply({
+    embeds: [infoEmbed(
+      'Setup — Step 1 of 2: Pick a Category',
+      'Select the **category** you want to add to the shadow system.\n\nRun `/setup` again after this to add more groups one by one.',
+    )],
+    components: [row],
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 2 — Category chosen → update message in-place with role picker
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function handleCategorySelect(interaction) {
+  const categoryId = interaction.values[0];
+  const category = interaction.guild.channels.cache.get(categoryId);
+
+  if (!category) {
+    return interaction.update({
+      embeds: [errorEmbed('Category Not Found', 'That category no longer exists.')],
+      components: [],
+    });
+  }
+
+  const channelCount = interaction.guild.channels.cache.filter(
+    (c) => c.parentId === categoryId,
+  ).size;
+
+  const row = new ActionRowBuilder().addComponents(
+    new RoleSelectMenuBuilder()
+      .setCustomId(`setup_role_select:${categoryId}`)
+      .setPlaceholder('Pick the group role for this category...')
+      .setMinValues(1)
+      .setMaxValues(1),
+  );
+
+  return interaction.update({
+    embeds: [infoEmbed(
+      'Setup — Step 2 of 2: Pick the Group Role',
+      `Category: **${category.name}** — ${channelCount} channel${channelCount !== 1 ? 's' : ''}\n\nNow pick the **group role** that has access to this category.\n\nThe bot will create \`Shadowed <Role Name>\` and mirror all channels into a private shadow category.`,
+    )],
+    components: [row],
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 3 — Role chosen → create shadow infrastructure for this group
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function handleRoleSelect(interaction) {
+  await interaction.deferUpdate();
+
+  const categoryId = interaction.customId.split(':')[1];
+  const groupRoleId = interaction.values[0];
+  const { guild } = interaction;
+
+  try {
+    await guild.channels.fetch();
+    await guild.roles.fetch();
+
+    const originalCategory = guild.channels.cache.get(categoryId);
+    const groupRole = guild.roles.cache.get(groupRoleId);
+
+    if (!originalCategory || !groupRole) {
+      return interaction.editReply({
+        embeds: [errorEmbed('Not Found', 'The selected category or role no longer exists.')],
+        components: [],
+      });
+    }
+
+    // ── Create or reuse shadow role ──────────────────────────────────────────
+    const shadowRoleName = `Shadowed ${groupRole.name}`;
+    let shadowRole = guild.roles.cache.find((r) => r.name === shadowRoleName);
+    const roleCreated = !shadowRole;
+
+    if (!shadowRole) {
+      shadowRole = await guild.roles.create({
+        name: shadowRoleName,
         colors: { primaryColor: 0x2c2f33 },
         hoist: false,
         mentionable: false,
-        reason: 'Shadowban bot — auto setup',
+        reason: 'Shadowban bot — group shadow role',
       });
-      logger.info(`🛡️  Created Shadowed role`, { guildId: guild.id });
+      logger.info(`Created shadow role: ${shadowRoleName}`, { guildId: guild.id });
     }
 
-    // ── Step 2: Create the shadow category ────────────────────────────────────
-    // @everyone: cannot see it at all
-    // Shadowed:  can see it, but cannot send messages or add reactions
+    // ── Create shadow category ───────────────────────────────────────────────
     const shadowCategory = await guild.channels.create({
-      name: '🔒 Shadow Zone',
+      name: `🔒 ${originalCategory.name}`,
       type: ChannelType.GuildCategory,
       permissionOverwrites: [
-        {
-          id: guild.roles.everyone.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: shadowedRole.id,
-          allow: [PermissionFlagsBits.ViewChannel],
-          deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions],
-        },
+        { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+        copyRoleOverwrite(originalCategory, groupRole.id, shadowRole.id, [PermissionFlagsBits.ViewChannel]),
       ],
-      reason: 'Shadowban bot — auto setup',
+      reason: 'Shadowban bot — shadow category',
     });
 
-    // ── Step 3: Create #shadow-hold inside that category ──────────────────────
-    // Inherits category permissions — Shadowed can read, can't write
-    const shadowChannel = await guild.channels.create({
-      name: 'shadow-hold',
-      type: ChannelType.GuildText,
-      parent: shadowCategory.id,
-      topic: 'Intercepted messages appear here. Visible only to their authors.',
-      reason: 'Shadowban bot — auto setup',
-    });
+    // ── Mirror every channel in the category ─────────────────────────────────
+    const channels = guild.channels.cache
+      .filter((c) => c.parentId === categoryId)
+      .sort((a, b) => a.position - b.position);
 
-    // ── Step 4: Create #mod-queue (admins only) ───────────────────────────────
-    // Neither @everyone nor Shadowed can see this
-    const modQueueChannel = await guild.channels.create({
-      name: 'mod-queue',
-      type: ChannelType.GuildText,
-      permissionOverwrites: [
-        {
-          id: guild.roles.everyone.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: shadowedRole.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-      ],
-      topic: 'Pending shadowban reviews. Use the buttons to Approve, Reject, or Release.',
-      reason: 'Shadowban bot — auto setup',
-    });
+    const channelMappings = [];
 
-    // ── Step 5: Save everything to Supabase ───────────────────────────────────
-    await upsertGuildSettings(interaction.guildId, {
-      shadow_channel_id: shadowChannel.id,
+    for (const [, channel] of channels) {
+      const shadowChannel = await guild.channels.create({
+        name: channel.name.slice(0, 100),
+        type: ChannelType.GuildText,
+        parent: shadowCategory.id,
+        permissionOverwrites: [
+          { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+          copyRoleOverwrite(channel, groupRole.id, shadowRole.id),
+        ],
+        topic: `Shadow mirror of #${channel.name}.`,
+        reason: 'Shadowban bot — shadow channel',
+      });
+
+      channelMappings.push({
+        originalChannelId: channel.id,
+        shadowChannelId: shadowChannel.id,
+        groupRoleId: groupRole.id,
+        shadowRoleId: shadowRole.id,
+      });
+    }
+
+    // ── Create or reuse #mod-queue ───────────────────────────────────────────
+    const existingSettings = await getGuildSettings(guild.id);
+    let modQueueChannel = existingSettings?.mod_queue_channel_id
+      ? await guild.channels.fetch(existingSettings.mod_queue_channel_id).catch(() => null)
+      : null;
+
+    const modQueueCreated = !modQueueChannel;
+
+    if (!modQueueChannel) {
+      modQueueChannel = await guild.channels.create({
+        name: 'mod-queue',
+        type: ChannelType.GuildText,
+        permissionOverwrites: [
+          { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+        ],
+        topic: 'Pending shadowban reviews. Use the buttons to Approve, Reject, or Release.',
+        reason: 'Shadowban bot — mod queue',
+      });
+    }
+
+    // ── Upsert mappings — preserves all other groups ─────────────────────────
+    await upsertChannelMappings(guild.id, channelMappings);
+    await upsertGuildSettings(guild.id, {
       mod_queue_channel_id: modQueueChannel.id,
       enabled: true,
     });
 
-    logger.info('Guild setup complete', {
+    logger.info('Group setup complete', {
       guildId: guild.id,
-      shadowedRoleId: shadowedRole.id,
-      shadowCategoryId: shadowCategory.id,
-      shadowChannelId: shadowChannel.id,
-      modQueueChannelId: modQueueChannel.id,
+      category: originalCategory.name,
+      groupRole: groupRole.name,
+      shadowRole: shadowRoleName,
+      channelCount: channelMappings.length,
       admin: interaction.user.tag,
     });
 
     const lines = [
-      `${roleCreated ? EMOJI.SUCCESS + ' Created' : EMOJI.INFO + ' Reused existing'} **Shadowed** role`,
-      `${EMOJI.SUCCESS} Created **🔒 Shadow Zone** category`,
-      `${EMOJI.SHADOW} Shadow channel: ${shadowChannel}`,
-      `${EMOJI.MOD} Mod queue: ${modQueueChannel}`,
+      `${EMOJI.SUCCESS} **${originalCategory.name}** → 🔒 ${shadowCategory.name}`,
+      `${roleCreated ? EMOJI.SUCCESS + ' Created' : EMOJI.INFO + ' Reused'} shadow role: **${shadowRoleName}**`,
+      `${EMOJI.SUCCESS} Mapped **${channelMappings.length}** channel${channelMappings.length !== 1 ? 's' : ''}`,
+      `${modQueueCreated ? EMOJI.SUCCESS + ' Created' : EMOJI.INFO + ' Reused'} mod queue: ${modQueueChannel}`,
       '',
-      '**One manual step required:**',
-      `Go to each of your normal channels/categories and add **Deny ViewChannel** for the \`Shadowed\` role so shadowed users cannot see them.`,
+      '**Shadowban flow for this group:**',
+      `Flagged message → Remove \`${groupRole.name}\` + Add \`${shadowRoleName}\``,
+      `Approve / Release → Remove \`${shadowRoleName}\` + Restore \`${groupRole.name}\``,
+      '',
+      `Run \`/setup\` again to add the next group.`,
     ];
 
     return interaction.editReply({
-      embeds: [successEmbed('Setup Complete', lines.join('\n'))],
+      embeds: [successEmbed(`Group Added: ${groupRole.name}`, lines.join('\n'))],
+      components: [],
     });
 
   } catch (err) {
-    logger.error('setup command failed', { guildId: interaction.guildId, error: err.message });
+    logger.error('Setup role select failed', { guildId: interaction.guildId, error: err.message });
     return interaction.editReply({
       embeds: [errorEmbed('Setup Failed', `Something went wrong: ${err.message}\n\nMake sure the bot has **Administrator** permission.`)],
+      components: [],
     });
   }
+}
+
+function copyRoleOverwrite(channel, sourceRoleId, targetRoleId, fallbackAllow = []) {
+  const sourceOverwrite = channel.permissionOverwrites.cache.get(sourceRoleId);
+
+  if (!sourceOverwrite) {
+    return {
+      id: targetRoleId,
+      allow: fallbackAllow,
+      deny: [],
+    };
+  }
+
+  return {
+    id: targetRoleId,
+    allow: sourceOverwrite.allow.bitfield,
+    deny: sourceOverwrite.deny.bitfield,
+  };
 }

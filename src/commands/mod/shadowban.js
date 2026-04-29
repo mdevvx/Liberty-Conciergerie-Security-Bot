@@ -1,34 +1,33 @@
 // src/commands/mod/shadowban.js
 // ─────────────────────────────────────────────────────────────────────────────
-// /shadowban <user> [reason] — Manually assign the Shadow role to a user.
-// Requires Manage Messages permission (mod-level).
+// /shadowban <user> [reason] — Manually shadowban a user.
+// Looks up the user's current group role from the DB mappings,
+// removes it, and assigns the corresponding shadow role.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
+import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } from 'discord.js';
+import { getRoleMappingsForGuild } from '../../services/supabase.js';
 import { successEmbed, errorEmbed, warningEmbed } from '../../utils/embed.js';
 import { EMOJI } from '../../config/constants.js';
 import logger from '../../utils/logger.js';
 
-const SHADOW_ROLE_NAME = 'Shadowed';
-
 export const data = new SlashCommandBuilder()
   .setName('shadowban')
-  .setDescription('Manually shadowban a user — their messages become invisible to others')
+  .setDescription('Manually shadowban a user — removes their group role and assigns their shadow role')
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
   .addUserOption((opt) =>
-    opt.setName('user').setDescription('The user to shadowban').setRequired(true)
+    opt.setName('user').setDescription('The user to shadowban').setRequired(true),
   )
   .addStringOption((opt) =>
-    opt.setName('reason').setDescription('Reason for the shadowban (logged)').setRequired(false)
+    opt.setName('reason').setDescription('Reason for the shadowban (logged)').setRequired(false),
   );
 
 export async function execute(interaction) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const target = interaction.options.getMember('user');
   const reason = interaction.options.getString('reason') || 'No reason provided';
 
-  // ── Guards ────────────────────────────────────────────────────────────────
   if (!target) {
     return interaction.editReply({
       embeds: [errorEmbed('User Not Found', 'That user is not in this server.')],
@@ -47,29 +46,50 @@ export async function execute(interaction) {
     });
   }
 
-  // ── Assign Shadow role ────────────────────────────────────────────────────
   try {
-    let shadowRole = interaction.guild.roles.cache.find((r) => r.name === SHADOW_ROLE_NAME);
+    // Load all group ↔ shadow role pairs for this guild
+    const roleMappings = await getRoleMappingsForGuild(interaction.guildId);
 
-    if (!shadowRole) {
-      shadowRole = await interaction.guild.roles.create({
-        name: SHADOW_ROLE_NAME,
-        colors: { primaryColor: 0x2c2f33 },
-        reason: 'Shadowban bot — auto-created Shadow role',
-      });
-    }
+    // Find which group role the user currently has
+    const activeMapping = roleMappings.find(
+      ({ group_role_id }) => group_role_id && target.roles.cache.has(group_role_id),
+    );
 
-    if (target.roles.cache.has(shadowRole.id)) {
+    if (!activeMapping) {
       return interaction.editReply({
-        embeds: [warningEmbed('Already Shadowed', `${target} is already shadowbanned.`)],
+        embeds: [errorEmbed(
+          'No Group Found',
+          `${target} is not a member of any configured group.\n\nRun \`/setup\` to configure group categories first.`,
+        )],
       });
     }
 
-    await target.roles.add(shadowRole, `Manual shadowban by ${interaction.user.tag}: ${reason}`);
+    const groupRole = interaction.guild.roles.cache.get(activeMapping.group_role_id);
+    const shadowRole = activeMapping.shadow_role_id
+      ? interaction.guild.roles.cache.get(activeMapping.shadow_role_id)
+      : null;
+
+    // Check not already shadowed
+    if (shadowRole && target.roles.cache.has(shadowRole.id)) {
+      return interaction.editReply({
+        embeds: [warningEmbed('Already Shadowed', `${target} already has the **${shadowRole.name}** role.`)],
+      });
+    }
+
+    // Remove group role, add shadow role
+    if (groupRole) {
+      await target.roles.remove(groupRole, `Manual shadowban by ${interaction.user.tag}: ${reason}`);
+    }
+
+    if (shadowRole) {
+      await target.roles.add(shadowRole, `Manual shadowban by ${interaction.user.tag}: ${reason}`);
+    }
 
     logger.info(`${EMOJI.SHADOW} Manual shadowban: ${target.user.tag}`, {
       guildId: interaction.guildId,
       mod: interaction.user.tag,
+      groupRole: groupRole?.name,
+      shadowRole: shadowRole?.name,
       reason,
     });
 
@@ -77,7 +97,7 @@ export async function execute(interaction) {
       embeds: [
         successEmbed(
           'User Shadowbanned',
-          `${EMOJI.SHADOW} **${target.user.tag}** has been shadowbanned.\n📝 **Reason:** ${reason}`
+          `${EMOJI.SHADOW} **${target.user.tag}** has been shadowbanned.\n🎭 **Group role removed:** ${groupRole?.name ?? 'none'}\n👁️ **Shadow role added:** ${shadowRole?.name ?? 'none'}\n📝 **Reason:** ${reason}`,
         ),
       ],
     });
@@ -85,7 +105,7 @@ export async function execute(interaction) {
   } catch (err) {
     logger.error('shadowban command failed', { guildId: interaction.guildId, error: err.message });
     return interaction.editReply({
-      embeds: [errorEmbed('Shadowban Failed', `Could not assign Shadow role: \`${err.message}\``)],
+      embeds: [errorEmbed('Shadowban Failed', `Could not swap roles: \`${err.message}\``)],
     });
   }
 }

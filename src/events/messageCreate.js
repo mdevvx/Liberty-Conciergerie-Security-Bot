@@ -18,8 +18,6 @@ import logger from '../utils/logger.js';
 export const name = 'messageCreate';
 export const once = false;
 
-const SHADOW_ROLE_NAME = 'Shadowed';
-
 export async function execute(message, client) {
   // ── Ignore bots and DMs ──────────────────────────────────────────────────
   if (message.author.bot || !message.guild) return;
@@ -58,7 +56,8 @@ export async function execute(message, client) {
   const member = message.member;
   if (!member) return;
 
-  const alreadyShadowed = member.roles.cache.some((r) => r.name === SHADOW_ROLE_NAME);
+  // Skip users who have any Shadowed* role — their messages land in shadow channels
+  const alreadyShadowed = member.roles.cache.some((r) => r.name.startsWith('Shadowed'));
   if (alreadyShadowed) return;
 
   // ── Skip messages from users with Manage Messages permission (staff) ──────

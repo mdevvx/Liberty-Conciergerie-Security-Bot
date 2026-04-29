@@ -68,16 +68,33 @@ export async function getAiSystemPrompt(guildId) {
   return settings?.ai_system_prompt ?? null;
 }
 
+// 60-second TTL cache — avoids a DB round-trip before every slash command
+const _enabledCache = new Map(); // guildId → { value: boolean, until: number }
+
 /**
  * Check whether the bot is enabled for a guild.
  * Defaults to TRUE if the guild has no settings row yet (first-run behaviour).
+ * Result is cached for 60 s; call invalidateBotEnabledCache() after toggling.
  * @param {string} guildId
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
 export async function isBotEnabled(guildId) {
+  const hit = _enabledCache.get(guildId);
+  if (hit && Date.now() < hit.until) return hit.value;
+
   const settings = await getGuildSettings(guildId);
-  // No row = bot has never been toggled, treat as enabled
-  return settings ? settings.enabled : true;
+  const value = settings ? settings.enabled : true;
+  _enabledCache.set(guildId, { value, until: Date.now() + 60_000 });
+  return value;
+}
+
+/**
+ * Bust the isBotEnabled cache for a guild.
+ * Must be called after /toggle writes a new state.
+ * @param {string} guildId
+ */
+export function invalidateBotEnabledCache(guildId) {
+  _enabledCache.delete(guildId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,6 +116,8 @@ export async function createShadowMessage({
   channelId,
   channelName,
   classification,
+  groupRoleId,
+  shadowRoleId,
 }) {
   const { data, error } = await supabase
     .from('shadowban_messages')
@@ -113,6 +132,8 @@ export async function createShadowMessage({
       channel_name: channelName,
       classification,
       status: 'pending',
+      group_role_id: groupRoleId ?? null,
+      shadow_role_id: shadowRoleId ?? null,
     })
     .select()
     .single();
@@ -170,4 +191,130 @@ export async function updateShadowMessageStatus(shadowId, status, publicId = nul
   }
 
   return data;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHANNEL MAPPINGS
+// Maps original channel IDs → their shadow channel counterparts.
+// Table: shadowban_channel_map (guild_id, original_channel_id, shadow_channel_id,
+//                               group_role_id, shadow_role_id)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch all channel mappings for a guild in one query.
+ * Used by the audit command to avoid per-channel DB calls.
+ * @param {string} guildId
+ * @returns {Promise<object[]>}
+ */
+export async function getChannelMappingsForGuild(guildId) {
+  const { data, error } = await supabase
+    .from('shadowban_channel_map')
+    .select('*')
+    .eq('guild_id', guildId);
+
+  if (error) {
+    logger.error('getChannelMappingsForGuild failed', { guildId, error: error.message });
+    return [];
+  }
+
+  return data ?? [];
+}
+
+/**
+ * Delete all channel mappings for a guild. Called on re-setup so stale entries
+ * don't accumulate.
+ * @param {string} guildId
+ */
+export async function clearChannelMappings(guildId) {
+  const { error } = await supabase
+    .from('shadowban_channel_map')
+    .delete()
+    .eq('guild_id', guildId);
+
+  if (error) {
+    logger.error('clearChannelMappings failed', { guildId, error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Bulk-upsert channel mappings after setup.
+ * @param {string} guildId
+ * @param {{ originalChannelId: string, shadowChannelId: string, groupRoleId: string|null, shadowRoleId: string|null }[]} mappings
+ */
+export async function upsertChannelMappings(guildId, mappings) {
+  if (mappings.length === 0) return;
+
+  const rows = mappings.map(({ originalChannelId, shadowChannelId, groupRoleId, shadowRoleId }) => ({
+    guild_id: guildId,
+    original_channel_id: originalChannelId,
+    shadow_channel_id: shadowChannelId,
+    group_role_id: groupRoleId ?? null,
+    shadow_role_id: shadowRoleId ?? null,
+  }));
+
+  const { error } = await supabase
+    .from('shadowban_channel_map')
+    .upsert(rows, { onConflict: 'guild_id,original_channel_id' });
+
+  if (error) {
+    logger.error('upsertChannelMappings failed', { guildId, error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Look up routing info for a source channel.
+ * Returns null if the channel has no shadow mapping.
+ * @param {string} guildId
+ * @param {string} originalChannelId
+ * @returns {Promise<{ shadowChannelId: string, groupRoleId: string|null, shadowRoleId: string|null }|null>}
+ */
+export async function getShadowChannelFor(guildId, originalChannelId) {
+  const { data, error } = await supabase
+    .from('shadowban_channel_map')
+    .select('shadow_channel_id, group_role_id, shadow_role_id')
+    .eq('guild_id', guildId)
+    .eq('original_channel_id', originalChannelId)
+    .single();
+
+  if (error && error.code !== 'PGRST116') {
+    logger.error('getShadowChannelFor failed', { guildId, originalChannelId, error: error.message });
+  }
+
+  if (!data) return null;
+
+  return {
+    shadowChannelId: data.shadow_channel_id,
+    groupRoleId: data.group_role_id,
+    shadowRoleId: data.shadow_role_id,
+  };
+}
+
+/**
+ * Get all unique (group_role_id, shadow_role_id) pairs configured for a guild.
+ * Used by manual shadowban/unshadowban to find which roles to swap.
+ * @param {string} guildId
+ * @returns {Promise<{ group_role_id: string, shadow_role_id: string }[]>}
+ */
+export async function getRoleMappingsForGuild(guildId) {
+  const { data, error } = await supabase
+    .from('shadowban_channel_map')
+    .select('group_role_id, shadow_role_id')
+    .eq('guild_id', guildId)
+    .not('group_role_id', 'is', null);
+
+  if (error) {
+    logger.error('getRoleMappingsForGuild failed', { guildId, error: error.message });
+    return [];
+  }
+
+  // Deduplicate — many channels share the same role pair
+  const seen = new Set();
+  return (data ?? []).filter(({ group_role_id, shadow_role_id }) => {
+    const key = `${group_role_id}:${shadow_role_id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

@@ -7,10 +7,12 @@
 // Also enforces the guild-level enable/disable toggle for slash commands.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { InteractionType } from 'discord.js';
-import { isBotEnabled, upsertGuildSettings } from '../services/supabase.js';
+import { MessageFlags } from 'discord.js';
+import { isBotEnabled } from '../services/supabase.js';
 import { handleModQueueButton } from '../services/shadowService.js';
-import { disabledEmbed, errorEmbed, successEmbed } from '../utils/embed.js';
+import { handleCategorySelect, handleRoleSelect } from '../commands/admin/setup.js';
+import { handleAuditFix } from '../commands/admin/audit.js';
+import { disabledEmbed, errorEmbed } from '../utils/embed.js';
 import logger from '../utils/logger.js';
 
 export const name = 'interactionCreate';
@@ -28,12 +30,12 @@ export async function execute(interaction, client) {
 
     // The /toggle command must always work, even when the bot is disabled,
     // so admins can re-enable it. Skip the enabled check for it.
-    const bypassToggle = interaction.commandName === 'toggle';
+    const bypassToggle = ['toggle', 'setup', 'audit', 'sync', 'setprompt'].includes(interaction.commandName);
 
     if (!bypassToggle) {
       const enabled = await isBotEnabled(interaction.guildId);
       if (!enabled) {
-        return interaction.reply({ embeds: [disabledEmbed()], ephemeral: true });
+        return interaction.reply({ embeds: [disabledEmbed()], flags: MessageFlags.Ephemeral });
       }
     }
 
@@ -44,74 +46,108 @@ export async function execute(interaction, client) {
         guildId: interaction.guildId,
         error: err.message,
       });
+      if (isExpiredInteractionError(err)) return;
 
       const embed = errorEmbed('Command Error', 'Something went wrong. Please try again.');
 
       // Reply or follow-up depending on whether we already responded
       if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({ embeds: [embed], ephemeral: true });
+        await interaction.followUp({ embeds: [embed], flags: MessageFlags.Ephemeral });
       } else {
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
       }
     }
 
     return;
   }
 
-  // ── Modal submissions ───────────────────────────────────────────────────────
-  if (interaction.isModalSubmit()) {
-    if (interaction.customId === 'setprompt_modal') {
-      await interaction.deferReply({ ephemeral: true });
-      const prompt = interaction.fields.getTextInputValue('system_prompt');
-
+  // ── String select menu (setup: category selection) ──────────────────────────
+  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === 'setup_cat_select') {
       try {
-        await upsertGuildSettings(interaction.guildId, { ai_system_prompt: prompt });
-
-        logger.info('AI system prompt updated', {
-          guildId: interaction.guildId,
-          admin: interaction.user.tag,
-          promptLength: prompt.length,
-        });
-
-        return interaction.editReply({
-          embeds: [
-            successEmbed(
-              'System Prompt Saved',
-              `The AI system prompt has been set (${prompt.length} characters).\nUsers can now use \`/ask\` to chat with Claude.`
-            ),
-          ],
-        });
+        await handleCategorySelect(interaction);
       } catch (err) {
-        logger.error('setprompt modal save failed', { guildId: interaction.guildId, error: err.message });
-        return interaction.editReply({
-          embeds: [errorEmbed('Save Failed', 'Could not save the prompt. Please try again.')],
+        logger.error('Setup category select handler failed', {
+          guildId: interaction.guildId,
+          error: err.message,
         });
+        const embed = errorEmbed('Setup Failed', 'Something went wrong during setup. Check bot permissions and try again.');
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        } else {
+          await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
       }
     }
-
     return;
   }
 
-  // ── Button interactions (mod queue: Approve / Reject / Release) ─────────────
+  // ── Role select menu (setup: role selection) ────────────────────────────────
+  if (interaction.isRoleSelectMenu()) {
+    if (interaction.customId.startsWith('setup_role_select:')) {
+      try {
+        await handleRoleSelect(interaction);
+      } catch (err) {
+        logger.error('Setup role select handler failed', {
+          guildId: interaction.guildId,
+          error: err.message,
+        });
+        const embed = errorEmbed('Setup Failed', 'Something went wrong during setup. Check bot permissions and try again.');
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        } else {
+          await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
+      }
+    }
+    return;
+  }
+
+  // ── Button interactions ──────────────────────────────────────────────────────
   if (interaction.isButton()) {
-    // Button custom IDs are prefixed with "shadowban_" — ignore anything else
-    if (!interaction.customId.startsWith('shadowban_')) return;
+    // Audit fix button
+    if (interaction.customId === 'audit_fix') {
+      try {
+        await handleAuditFix(interaction);
+      } catch (err) {
+        logger.error('Audit fix handler failed', {
+          guildId: interaction.guildId,
+          error: err.message,
+        });
+        const embed = errorEmbed('Fix Failed', 'Something went wrong. Check bot permissions and try again.');
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        } else {
+          await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
+      }
+      return;
+    }
 
-    try {
-      await handleModQueueButton(interaction);
-    } catch (err) {
-      logger.error('Mod queue button handler failed', {
-        guildId: interaction.guildId,
-        customId: interaction.customId,
-        error: err.message,
-      });
+    // Mod queue buttons: Approve / Reject / Release
+    if (interaction.customId.startsWith('shadowban_')) {
+      try {
+        await handleModQueueButton(interaction);
+      } catch (err) {
+        logger.error('Mod queue button handler failed', {
+          guildId: interaction.guildId,
+          customId: interaction.customId,
+          error: err.message,
+        });
+        if (isExpiredInteractionError(err)) return;
 
-      const embed = errorEmbed('Action Failed', 'Could not process this action. Check bot permissions.');
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({ embeds: [embed], ephemeral: true });
-      } else {
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+        const embed = errorEmbed('Action Failed', 'Could not process this action. Check bot permissions.');
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        } else {
+          await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
       }
     }
   }
+}
+
+function isExpiredInteractionError(err) {
+  const codes = [err?.code, err?.rawError?.code].map((code) => Number(code));
+  return codes.includes(10062) || codes.includes(40060);
 }

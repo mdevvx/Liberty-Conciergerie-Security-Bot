@@ -6,7 +6,7 @@
 // but that's handled by Railway deploy, not a runtime command.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SlashCommandBuilder, PermissionFlagsBits, REST, Routes } from 'discord.js';
+import { SlashCommandBuilder, PermissionFlagsBits, REST, Routes, MessageFlags } from 'discord.js';
 import { config } from '../../config/config.js';
 import { successEmbed, errorEmbed, infoEmbed } from '../../utils/embed.js';
 import { EMOJI } from '../../config/constants.js';
@@ -18,7 +18,7 @@ export const data = new SlashCommandBuilder()
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 export async function execute(interaction, client) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   try {
     // Build the payload from the loaded commands collection

@@ -4,7 +4,7 @@
 // Visible to anyone (no permission requirement) but shows guild-specific data.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from 'discord.js';
 import { getGuildSettings } from '../../services/supabase.js';
 import supabase from '../../services/supabase.js';
 import { COLORS, EMOJI } from '../../config/constants.js';
@@ -16,7 +16,7 @@ export const data = new SlashCommandBuilder()
   .setDescription('Show the current bot status and configuration for this server');
 
 export async function execute(interaction, client) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   try {
     const settings = await getGuildSettings(interaction.guildId);
@@ -24,12 +24,12 @@ export async function execute(interaction, client) {
 
     // ── Pull message stats from DB ──────────────────────────────────────────
     const { count: totalShadowed } = await supabase
-      .from('shadow_messages')
+      .from('shadowban_messages')
       .select('*', { count: 'exact', head: true })
       .eq('guild_id', interaction.guildId);
 
     const { count: pendingCount } = await supabase
-      .from('shadow_messages')
+      .from('shadowban_messages')
       .select('*', { count: 'exact', head: true })
       .eq('guild_id', interaction.guildId)
       .eq('status', 'pending');
@@ -42,10 +42,6 @@ export async function execute(interaction, client) {
     const uptimeStr = `${hours}h ${minutes}m ${seconds}s`;
 
     // ── Channel mentions ────────────────────────────────────────────────────
-    const shadowChannelStr = settings?.shadow_channel_id
-      ? `<#${settings.shadow_channel_id}>`
-      : '`Not configured`';
-
     const modQueueStr = settings?.mod_queue_channel_id
       ? `<#${settings.mod_queue_channel_id}>`
       : '`Not configured`';
@@ -68,11 +64,6 @@ export async function execute(interaction, client) {
         {
           name: '📡 Ping',
           value: `\`${client.ws.ping}ms\``,
-          inline: true,
-        },
-        {
-          name: `${EMOJI.SHADOW} Shadow Channel`,
-          value: shadowChannelStr,
           inline: true,
         },
         {

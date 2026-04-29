@@ -3,7 +3,7 @@
 // /help — Show all available commands grouped by category.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from 'discord.js';
 import { COLORS, EMOJI } from '../../config/constants.js';
 
 export const data = new SlashCommandBuilder()
@@ -14,7 +14,7 @@ export async function execute(interaction, client) {
   // Group commands by their folder category
   // We infer category from the command file path stored at load time if available,
   // otherwise we categorise by name pattern
-  const adminCommands = ['toggle', 'sync', 'setup'];
+  const adminCommands = ['toggle', 'sync', 'setup', 'audit'];
   const modCommands = ['shadowban', 'unshadowban'];
   const utilityCommands = ['status', 'help'];
 
@@ -48,5 +48,5 @@ export async function execute(interaction, client) {
     .setFooter({ text: 'Admin commands require Administrator • Mod commands require Manage Messages' })
     .setTimestamp();
 
-  return interaction.reply({ embeds: [embed], ephemeral: true });
+  return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }

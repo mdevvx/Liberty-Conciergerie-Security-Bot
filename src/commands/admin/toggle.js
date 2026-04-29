@@ -5,8 +5,8 @@
 // This command always works even when the bot is disabled (bypass in interactionCreate).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
-import { getGuildSettings, upsertGuildSettings } from '../../services/supabase.js';
+import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } from 'discord.js';
+import { getGuildSettings, upsertGuildSettings, invalidateBotEnabledCache } from '../../services/supabase.js';
 import { successEmbed, errorEmbed } from '../../utils/embed.js';
 import { EMOJI } from '../../config/constants.js';
 import logger from '../../utils/logger.js';
@@ -17,7 +17,7 @@ export const data = new SlashCommandBuilder()
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 export async function execute(interaction) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   try {
     const settings = await getGuildSettings(interaction.guildId);
@@ -25,6 +25,7 @@ export async function execute(interaction) {
     const newState = !currentlyEnabled;
 
     await upsertGuildSettings(interaction.guildId, { enabled: newState });
+    invalidateBotEnabledCache(interaction.guildId);
 
     const emoji = newState ? EMOJI.TOGGLE_ON : EMOJI.TOGGLE_OFF;
     const label = newState ? 'Enabled' : 'Disabled';

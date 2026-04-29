@@ -1,29 +1,33 @@
 // src/services/shadowService.js
 // ─────────────────────────────────────────────────────────────────────────────
 // Core shadowban logic:
-//   shadowMessage()         — intercepts a message, deletes it, reposts in shadow
-//                             channel, pushes to mod queue
+//   shadowMessage()         — intercepts a message, deletes it, reposts in the
+//                             group-specific shadow channel, pushes to mod queue
 //   handleModQueueButton()  — handles Approve / Reject / Release button clicks
+//
+// Per-group role flow:
+//   Shadowban  → remove Group N role  + add Shadowed N role
+//   Approve    → repost publicly + remove Shadowed N role + add Group N role
+//   Release    → remove Shadowed N role + add Group N role (no repost)
+//   Reject     → keep Shadowed N role (user stays invisible in their group)
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  WebhookClient,
-} from 'discord.js';
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    WebhookClient,
+} from "discord.js";
 import {
-  createShadowMessage,
-  getShadowMessageByShadowId,
-  updateShadowMessageStatus,
-  getGuildSettings,
-} from './supabase.js';
-import { modQueueEmbed, successEmbed, errorEmbed } from '../utils/embed.js';
-import { TIMING, SHADOW_STATUS, EMOJI, CLASSIFICATION } from '../config/constants.js';
-import logger from '../utils/logger.js';
-
-// ── Shadow role name used across all guilds ───────────────────────────────────
-const SHADOW_ROLE_NAME = 'Shadowed';
+    createShadowMessage,
+    getShadowMessageByShadowId,
+    updateShadowMessageStatus,
+    getGuildSettings,
+    getShadowChannelFor,
+} from "./supabase.js";
+import { modQueueEmbed, successEmbed, errorEmbed } from "../utils/embed.js";
+import { SHADOW_STATUS, EMOJI, CLASSIFICATION } from "../config/constants.js";
+import logger from "../utils/logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHADOW MESSAGE
@@ -31,147 +35,262 @@ const SHADOW_ROLE_NAME = 'Shadowed';
 
 /**
  * Full shadowban flow for a single message:
- *  1. Delete original message (within TIMING.DELETE_WINDOW_MS)
- *  2. Assign the Shadow role to the author
- *  3. Repost message in the shadow channel via webhook (looks identical to author)
- *  4. Push to mod queue channel with action buttons
+ *  1. Delete original message
+ *  2. Resolve routing: shadow channel + group/shadow role IDs for this channel
+ *  3. Swap roles: remove group role, add shadow role
+ *  4. Repost in the group-specific shadow channel via webhook
+ *  5. Save to DB (with role IDs for later restore)
+ *  6. Push to mod queue (SUSPECT only)
  *
  * @param {import('discord.js').Message} message
  * @param {string} classification — SUSPECT | TOXIC
  * @param {import('discord.js').Client} client
  */
 export async function shadowMessage(message, classification, client) {
-  const { guild, author, channel, content } = message;
+    const { guild, author, channel, content } = message;
 
-  try {
-    // ── Step 1: Delete the original message ASAP ──────────────────────────────
-    await message.delete();
-    logger.info(`🗑️  Deleted message ${message.id}`, { guildId: guild.id });
-
-  } catch (err) {
-    // If we can't delete (already gone, no permission), abort — don't shadowban
-    logger.error('Failed to delete original message', { guildId: guild.id, error: err.message });
-    return;
-  }
-
-  // ── Step 2: Get guild settings (shadow channel + mod queue channel) ─────────
-  const settings = await getGuildSettings(guild.id);
-
-  if (!settings?.shadow_channel_id || !settings?.mod_queue_channel_id) {
-    logger.warn('Guild missing shadow_channel_id or mod_queue_channel_id — skipping shadowban', {
-      guildId: guild.id,
-    });
-    return;
-  }
-
-  // ── Step 3: Assign the Shadow role to the author ──────────────────────────
-  try {
-    const member = await guild.members.fetch(author.id);
-    let shadowRole = guild.roles.cache.find((r) => r.name === SHADOW_ROLE_NAME);
-
-    if (!shadowRole) {
-      // Create the role if it doesn't exist yet
-      shadowRole = await guild.roles.create({
-        name: SHADOW_ROLE_NAME,
-        colors: { primaryColor: 0x2c2f33 },
-        reason: 'Shadowban bot — auto-created Shadow role',
-      });
-      logger.info(`🛡️  Created Shadow role in ${guild.name}`);
+    try {
+        // ── Step 1: Delete the original message ASAP ──────────────────────────────
+        await message.delete();
+        logger.info(`🗑️  Deleted message ${message.id}`, { guildId: guild.id });
+    } catch (err) {
+        logger.error("Failed to delete original message", {
+            guildId: guild.id,
+            error: err.message,
+        });
+        return;
     }
 
-    await member.roles.add(shadowRole, `Shadowban: ${classification}`);
-    logger.info(`👤 Assigned Shadow role to ${author.tag}`, { guildId: guild.id });
+    // ── Step 2: Resolve routing ───────────────────────────────────────────────
+    const [routing, settings] = await Promise.all([
+        getShadowChannelFor(guild.id, channel.id),
+        getGuildSettings(guild.id),
+    ]);
 
-  } catch (err) {
-    logger.error('Failed to assign Shadow role', { guildId: guild.id, error: err.message });
-  }
+    if (!routing) {
+        logger.info("Channel has no shadow mapping — not monitored, skipping", {
+            guildId: guild.id,
+            channelId: channel.id,
+        });
+        return;
+    }
 
-  // ── Step 4: Repost in shadow channel via webhook ──────────────────────────
-  let shadowMessageId = null;
+    if (!settings?.mod_queue_channel_id) {
+        logger.warn("Guild missing mod_queue_channel_id — skipping shadowban", {
+            guildId: guild.id,
+        });
+        return;
+    }
 
-  try {
-    const shadowChannel = await guild.channels.fetch(settings.shadow_channel_id);
+    const { shadowChannelId, groupRoleId, shadowRoleId } = routing;
 
-    // Get or create a webhook for this channel
-    const webhook = await getOrCreateWebhook(shadowChannel, client);
-    const webhookClient = new WebhookClient({ id: webhook.id, token: webhook.token });
+    // ── Step 3: Swap group role → shadow role ─────────────────────────────────
+    try {
+        const member = await guild.members.fetch(author.id);
 
-    const shadowMsg = await webhookClient.send({
-      content,
-      username: capitalize(author.username),
-      avatarURL: author.displayAvatarURL(),
-    });
+        if (groupRoleId) {
+            const groupRole = guild.roles.cache.get(groupRoleId);
+            if (groupRole && member.roles.cache.has(groupRole.id)) {
+                await member.roles.remove(
+                    groupRole,
+                    `Shadowban: ${classification}`,
+                );
+                logger.info(
+                    `Removed group role ${groupRole.name} from ${author.tag}`,
+                    { guildId: guild.id },
+                );
+            }
+        }
 
-    shadowMessageId = shadowMsg.id;
-    logger.info(`👁️  Reposted in shadow channel: ${shadowMsg.id}`, { guildId: guild.id });
+        if (shadowRoleId) {
+            const shadowRole = guild.roles.cache.get(shadowRoleId);
+            if (shadowRole) {
+                await member.roles.add(
+                    shadowRole,
+                    `Shadowban: ${classification}`,
+                );
+                logger.info(
+                    `Added shadow role ${shadowRole.name} to ${author.tag}`,
+                    { guildId: guild.id },
+                );
+            }
+        }
+    } catch (err) {
+        logger.error("Failed to swap group/shadow roles", {
+            guildId: guild.id,
+            error: err.message,
+        });
+    }
 
-  } catch (err) {
-    logger.error('Failed to repost in shadow channel', { guildId: guild.id, error: err.message });
-    return;
-  }
+    // ── Step 4: Repost in shadow channel ─────────────────────────────────────
+    let shadowMessageId = null;
 
-  // ── Step 5: Save to DB ────────────────────────────────────────────────────
-  let record;
-  try {
-    record = await createShadowMessage({
-      guildId: guild.id,
-      originalId: message.id,
-      shadowId: shadowMessageId,
-      authorId: author.id,
-      authorTag: author.tag,
-      content,
-      channelId: channel.id,
-      channelName: channel.name,
-      classification,
-    });
-  } catch (err) {
-    logger.error('Failed to save shadow message to DB', { guildId: guild.id, error: err.message });
-    return;
-  }
+    let shadowChannel;
+    try {
+        shadowChannel = await guild.channels.fetch(shadowChannelId);
+    } catch (err) {
+        logger.error("Failed to fetch shadow channel", {
+            guildId: guild.id,
+            shadowChannelId,
+            error: err.message,
+        });
+        return;
+    }
 
-  // ── Step 6: Post to mod queue (SUSPECT only — TOXIC is silently shadowbanned) ─
-  if (classification === CLASSIFICATION.TOXIC) {
-    logger.info(`🔇 TOXIC — silent shadowban, skipping mod queue`, { guildId: guild.id, shadowId: shadowMessageId });
-    return;
-  }
+    let webhook;
+    try {
+        webhook = await getOrCreateWebhook(shadowChannel, client);
+    } catch (err) {
+        logger.error("Failed to get/create webhook", {
+            guildId: guild.id,
+            shadowChannelId,
+            error: err.message,
+        });
+        return;
+    }
 
-  try {
-    const modQueueChannel = await guild.channels.fetch(settings.mod_queue_channel_id);
+    // try {
+    //     const webhookClient = new WebhookClient({
+    //         id: webhook.id,
+    //         token: webhook.token,
+    //     });
+    //     const shadowMsg = await webhookClient.send(
+    //         buildRepostPayload({
+    //             content,
+    //             user: author,
+    //             member: message.member,
+    //         }),
+    //     );
+    //     shadowMessageId = shadowMsg.id;
+    //     logger.info(`👁️  Reposted in shadow channel: ${shadowMsg.id}`, {
+    //         guildId: guild.id,
+    //     });
+    // } catch (err) {
+    //     logger.error("Failed to send via webhook", {
+    //         guildId: guild.id,
+    //         webhookId: webhook.id,
+    //         error: err.message,
+    //         code: err.code,
+    //     });
+    //     return;
+    try {
+        const payload = buildRepostPayload({
+            content,
+            user: author,
+            member: message.member,
+        });
+        try {
+            const webhookClient = new WebhookClient({ url: webhook.url });
+            const shadowMsg = await webhookClient.send(payload);
+            shadowMessageId = shadowMsg.id;
+        } catch (err) {
+            // if (err.code !== 10015) throw err;
+            // // Webhook is orphaned — delete it and retry with a fresh one
+            // logger.warn("Stale webhook detected, recreating", {
+            //     guildId: guild.id,
+            //     webhookId: webhook.id,
+            // });
+            // await webhook.delete("Stale webhook").catch(() => {});
+            // const fresh = await shadowChannel.createWebhook({
+            //     name: "ShadowBot",
+            //     reason: "Shadowban bot — webhook retry after 10015",
+            // });
+            // const freshClient = new WebhookClient({ url: fresh.url });
+            // const shadowMsg = await freshClient.send(payload);
+            logger.error("Failed to send via webhook", {
+                error: err.message,
+            });
+            shadowMessageId = shadowMsg.id;
+        }
+        logger.info(`👁️  Reposted in shadow channel: ${shadowMessageId}`, {
+            guildId: guild.id,
+        });
+    } catch (err) {
+        logger.error("Failed to send via webhook", {
+            guildId: guild.id,
+            webhookId: webhook.id,
+            error: err.message,
+            code: err.code,
+        });
+        return;
+    }
 
-    const embed = modQueueEmbed({
-      authorTag: author.tag,
-      authorId: author.id,
-      content,
-      channelName: channel.name,
-      classification,
-      messageId: message.id,
-    });
+    // ── Step 5: Save to DB ────────────────────────────────────────────────────
+    let record;
+    try {
+        record = await createShadowMessage({
+            guildId: guild.id,
+            originalId: message.id,
+            shadowId: shadowMessageId,
+            authorId: author.id,
+            authorTag: author.tag,
+            content,
+            channelId: channel.id,
+            channelName: channel.name,
+            classification,
+            groupRoleId,
+            shadowRoleId,
+        });
+    } catch (err) {
+        logger.error("Failed to save shadow message to DB", {
+            guildId: guild.id,
+            error: err.message,
+        });
+        return;
+    }
 
-    // Button custom IDs include the shadow message ID so we can look it up on click
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`shadowban_approve_${shadowMessageId}`)
-        .setLabel('Approve')
-        .setEmoji(EMOJI.APPROVE)
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(`shadowban_reject_${shadowMessageId}`)
-        .setLabel('Reject')
-        .setEmoji(EMOJI.REJECT)
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId(`shadowban_release_${shadowMessageId}`)
-        .setLabel('Release')
-        .setEmoji(EMOJI.RELEASE)
-        .setStyle(ButtonStyle.Secondary),
-    );
+    // ── Step 6: Post to mod queue (SUSPECT only) ──────────────────────────────
+    if (classification === CLASSIFICATION.TOXIC) {
+        logger.info(`🔇 TOXIC — silent shadowban, skipping mod queue`, {
+            guildId: guild.id,
+            shadowId: shadowMessageId,
+        });
+        return;
+    }
 
-    await modQueueChannel.send({ embeds: [embed], components: [row] });
-    logger.info(`📋 Pushed to mod queue`, { guildId: guild.id, shadowId: shadowMessageId });
+    try {
+        const modQueueChannel = await guild.channels.fetch(
+            settings.mod_queue_channel_id,
+        );
 
-  } catch (err) {
-    logger.error('Failed to post to mod queue', { guildId: guild.id, error: err.message });
-  }
+        const embed = modQueueEmbed({
+            authorTag: author.tag,
+            authorId: author.id,
+            content,
+            channelName: channel,
+            classification,
+            messageId: message.id,
+        });
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`shadowban_approve_${shadowMessageId}`)
+                .setLabel("Approve")
+                .setEmoji(EMOJI.APPROVE)
+                .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(`shadowban_reject_${shadowMessageId}`)
+                .setLabel("Reject")
+                .setEmoji(EMOJI.REJECT)
+                .setStyle(ButtonStyle.Danger),
+            new ButtonBuilder()
+                .setCustomId(`shadowban_release_${shadowMessageId}`)
+                .setLabel("Release")
+                .setEmoji(EMOJI.RELEASE)
+                .setStyle(ButtonStyle.Secondary),
+        );
+
+        await modQueueChannel.send({ embeds: [embed], components: [row] });
+        logger.info(`📋 Pushed to mod queue`, {
+            guildId: guild.id,
+            shadowId: shadowMessageId,
+        });
+    } catch (err) {
+        logger.error("Failed to post to mod queue", {
+            guildId: guild.id,
+            error: err.message,
+        });
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -183,138 +302,291 @@ export async function shadowMessage(message, classification, client) {
  * @param {import('discord.js').ButtonInteraction} interaction
  */
 export async function handleModQueueButton(interaction) {
-  await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
 
-  // Parse action and shadowId from the custom ID: "shadowban_<action>_<shadowId>"
-  const parts = interaction.customId.split('_');
-  const action = parts[1];           // approve | reject | release
-  const shadowId = parts.slice(2).join('_');  // the message ID
+    const parts = interaction.customId.split("_");
+    const action = parts[1];
+    const shadowId = parts.slice(2).join("_");
 
-  // Look up the record in DB
-  const record = await getShadowMessageByShadowId(shadowId);
+    const record = await getShadowMessageByShadowId(shadowId);
 
-  if (!record) {
-    return interaction.editReply({
-      embeds: [errorEmbed('Not Found', 'Could not find this message in the database.')],
-    });
-  }
-
-  if (record.status !== SHADOW_STATUS.PENDING) {
-    return interaction.editReply({
-      embeds: [errorEmbed('Already Actioned', `This message was already **${record.status}**.`)],
-    });
-  }
-
-  const guild = interaction.guild;
-  const settings = await getGuildSettings(guild.id);
-
-  // ── Approve: repost publicly + remove Shadow role ─────────────────────────
-  if (action === 'approve') {
-    let publicId = null;
-
-    try {
-      const publicChannel = await guild.channels.fetch(record.channel_id);
-      const webhook = await getOrCreateWebhook(publicChannel, interaction.client);
-      const webhookClient = new WebhookClient({ id: webhook.id, token: webhook.token });
-
-      const publicMsg = await webhookClient.send({
-        content: record.content,
-        username: capitalize(record.author_tag.split('#')[0]),
-        avatarURL: (await guild.members.fetch(record.author_id))
-          .user.displayAvatarURL(),
-      });
-
-      publicId = publicMsg.id;
-    } catch (err) {
-      logger.error('Approve: failed to repost publicly', { error: err.message });
+    if (!record) {
+        return interaction.editReply({
+            embeds: [
+                errorEmbed(
+                    "Not Found",
+                    "Could not find this message in the database.",
+                ),
+            ],
+        });
     }
 
-    // Remove Shadow role
-    await removeShadowRole(guild, record.author_id);
-    await updateShadowMessageStatus(shadowId, SHADOW_STATUS.APPROVED, publicId, interaction.user.id);
+    if (record.status !== SHADOW_STATUS.PENDING) {
+        return interaction.editReply({
+            embeds: [
+                errorEmbed(
+                    "Already Actioned",
+                    `This message was already **${record.status}**.`,
+                ),
+            ],
+        });
+    }
 
-    // Update the queue embed to show it's been handled
-    await disableQueueButtons(interaction);
+    const guild = interaction.guild;
+    const settings = await getGuildSettings(guild.id);
 
-    return interaction.editReply({
-      embeds: [successEmbed('Approved', `Message approved and reposted in <#${record.channel_id}>.`)],
-    });
-  }
+    // ── Approve: repost publicly + restore group role ─────────────────────────
+    if (action === "approve") {
+        let publicId = null;
 
-  // ── Reject: keep in shadow, author never knows ────────────────────────────
-  if (action === 'reject') {
-    await updateShadowMessageStatus(shadowId, SHADOW_STATUS.REJECTED, null, interaction.user.id);
-    await disableQueueButtons(interaction);
+        try {
+            const publicChannel = await guild.channels.fetch(record.channel_id);
+            const webhook = await getOrCreateWebhook(
+                publicChannel,
+                interaction.client,
+            );
 
-    return interaction.editReply({
-      embeds: [successEmbed('Rejected', 'Message rejected. It remains visible only to the author.')],
-    });
-  }
+            const member = await guild.members.fetch(record.author_id);
+            const payload = buildRepostPayload({
+                content: record.content,
+                user: member.user,
+                member,
+                fallbackName: record.author_tag.split("#")[0],
+            });
+            try {
+                const webhookClient = new WebhookClient({ url: webhook.url });
+                const publicMsg = await webhookClient.send(payload);
+                publicId = publicMsg.id;
+            } catch (err) {
+                // if (err.code !== 10015) throw err;
+                // logger.warn("Stale webhook on public channel, recreating", {
+                //     webhookId: webhook.id,
+                // });
+                // await webhook.delete("Stale webhook").catch(() => {});
+                // const fresh = await publicChannel.createWebhook({
+                //     name: "ShadowBot",
+                //     reason: "Shadowban bot — webhook retry after 10015",
+                // });
+                // const freshClient = new WebhookClient({ url: fresh.url });
+                // const publicMsg = await freshClient.send(payload);
+                logger.error("Failed to send via webhook", {
+                    error: err.message,
+                });
+                publicId = publicMsg.id;
+            }
+            logger.info(`👁️  Reposted in public channel: ${publicId}`, {
+                guildId: guild.id,
+            });
+        } catch (err) {
+            logger.error("Approve: failed to repost publicly", {
+                error: err.message,
+                code: err.code,
+            });
+            //     const webhookClient = new WebhookClient({
+            //         id: webhook.id,
+            //         token: webhook.token,
+            //     });
+            //     const publicMsg = await webhookClient.send(
+            //         buildRepostPayload({
+            //             content: record.content,
+            //             user: member.user,
+            //             member,
+            //             fallbackName: record.author_tag.split("#")[0],
+            //         }),
+            //     );
+            //     publicId = publicMsg.id;
+            // } catch (err) {
+            //     logger.error("Approve: failed to repost publicly", {
+            //         error: err.message,
+            //         code: err.code,
+            //     });
+        }
 
-  // ── Release: remove Shadow role but don't repost ──────────────────────────
-  if (action === 'release') {
-    await removeShadowRole(guild, record.author_id);
-    await updateShadowMessageStatus(shadowId, SHADOW_STATUS.RELEASED, null, interaction.user.id);
-    await disableQueueButtons(interaction);
+        await restoreGroupRoles(
+            guild,
+            record.author_id,
+            record.shadow_role_id,
+            record.group_role_id,
+        );
+        await updateShadowMessageStatus(
+            shadowId,
+            SHADOW_STATUS.APPROVED,
+            publicId,
+            interaction.user.id,
+        );
+        await disableQueueButtons(interaction);
 
-    return interaction.editReply({
-      embeds: [successEmbed('Released', `Shadow role removed from <@${record.author_id}>. Message not reposted.`)],
-    });
-  }
+        return interaction.editReply({
+            embeds: [
+                successEmbed(
+                    "Approved",
+                    `Message approved and reposted in <#${record.channel_id}>.`,
+                ),
+            ],
+        });
+    }
+
+    // ── Reject: keep in shadow, author stays invisible ────────────────────────
+    if (action === "reject") {
+        await updateShadowMessageStatus(
+            shadowId,
+            SHADOW_STATUS.REJECTED,
+            null,
+            interaction.user.id,
+        );
+        await disableQueueButtons(interaction);
+
+        return interaction.editReply({
+            embeds: [
+                successEmbed(
+                    "Rejected",
+                    "Message rejected. User remains in shadow.",
+                ),
+            ],
+        });
+    }
+
+    // ── Release: restore group role but don't repost ──────────────────────────
+    if (action === "release") {
+        await restoreGroupRoles(
+            guild,
+            record.author_id,
+            record.shadow_role_id,
+            record.group_role_id,
+        );
+        await updateShadowMessageStatus(
+            shadowId,
+            SHADOW_STATUS.RELEASED,
+            null,
+            interaction.user.id,
+        );
+        await disableQueueButtons(interaction);
+
+        return interaction.editReply({
+            embeds: [
+                successEmbed(
+                    "Released",
+                    `<@${record.author_id}> restored to their group. Message not reposted.`,
+                ),
+            ],
+        });
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-function capitalize(name) {
-  return name.charAt(0).toUpperCase() + name.slice(1);
+function buildRepostPayload({
+    content,
+    user,
+    member = null,
+    fallbackName = null,
+}) {
+    return {
+        content,
+        username:
+            member?.displayName ||
+            user?.globalName ||
+            user?.username ||
+            fallbackName,
+        avatarURL: user?.displayAvatarURL({ size: 256 }),
+    };
 }
 
-/**
- * Get the first bot-owned webhook in a channel, or create one if none exists.
- * @param {import('discord.js').TextChannel} channel
- * @param {import('discord.js').Client} client
- */
+// async function getOrCreateWebhook(channel, client) {
+//     const webhooks = await channel.fetchWebhooks();
+//     const candidates = [...webhooks.values()].filter(
+//         (w) => w.owner?.id === client.user.id && w.token,
+//     );
+
+//     for (const wh of candidates) {
+//         try {
+//             // GET /webhooks/{id}/{token} — throws 10015 if the webhook no longer exists
+//             await wh.fetch(true);
+//             return wh;
+//         } catch {
+//             await wh.delete("Stale webhook cleanup").catch(() => {});
+//         }
+//     }
+
+//     return channel.createWebhook({
+//         name: "ShadowBot",
+//         reason: "Shadowban bot — webhook",
+//     });
+// }
+
 async function getOrCreateWebhook(channel, client) {
-  const webhooks = await channel.fetchWebhooks();
-  const existing = webhooks.find((w) => w.owner?.id === client.user.id);
+    const webhooks = await channel.fetchWebhooks();
+    // channelId guard: fetchWebhooks() may return orphaned webhooks from
+    // previously-deleted shadow channels when the guild endpoint is used internally
+    const existing = webhooks.find(
+        (w) =>
+            w.owner?.id === client.user.id &&
+            w.token &&
+            w.channelId === channel.id,
+    );
 
-  if (existing) return existing;
+    if (existing) return existing;
 
-  return channel.createWebhook({
-    name: 'ShadowBot',
-    reason: 'Shadowban bot — auto-created webhook',
-  });
+    return channel.createWebhook({
+        name: "ShadowBot",
+        reason: "Shadowban bot — auto-created webhook",
+    });
 }
 
 /**
- * Remove the Shadow role from a guild member if they have it.
- * @param {import('discord.js').Guild} guild
- * @param {string} userId
+ * Remove the shadow role and restore the original group role for a user.
+ * Called on Approve and Release actions.
  */
-async function removeShadowRole(guild, userId) {
-  try {
-    const member = await guild.members.fetch(userId);
-    const shadowRole = guild.roles.cache.find((r) => r.name === SHADOW_ROLE_NAME);
-    if (shadowRole && member.roles.cache.has(shadowRole.id)) {
-      await member.roles.remove(shadowRole, 'Shadowban resolved by mod');
+async function restoreGroupRoles(guild, userId, shadowRoleId, groupRoleId) {
+    try {
+        const member = await guild.members.fetch(userId);
+
+        if (shadowRoleId) {
+            const shadowRole = guild.roles.cache.get(shadowRoleId);
+            if (shadowRole && member.roles.cache.has(shadowRole.id)) {
+                await member.roles.remove(
+                    shadowRole,
+                    "Shadowban resolved by mod",
+                );
+                logger.info(
+                    `Removed shadow role ${shadowRole.name} from ${userId}`,
+                    { guildId: guild.id },
+                );
+            }
+        }
+
+        if (groupRoleId) {
+            const groupRole = guild.roles.cache.get(groupRoleId);
+            if (groupRole && !member.roles.cache.has(groupRole.id)) {
+                await member.roles.add(
+                    groupRole,
+                    "Shadowban resolved — group role restored",
+                );
+                logger.info(
+                    `Restored group role ${groupRole.name} to ${userId}`,
+                    { guildId: guild.id },
+                );
+            }
+        }
+    } catch (err) {
+        logger.error("Failed to restore group roles", {
+            guildId: guild.id,
+            userId,
+            error: err.message,
+        });
     }
-  } catch (err) {
-    logger.error('Failed to remove Shadow role', { guildId: guild.id, userId, error: err.message });
-  }
 }
 
-/**
- * Edit the original mod queue message to disable its buttons after action is taken.
- * @param {import('discord.js').ButtonInteraction} interaction
- */
 async function disableQueueButtons(interaction) {
-  try {
-    const disabledRow = ActionRowBuilder.from(interaction.message.components[0]);
-    disabledRow.components.forEach((btn) => btn.setDisabled(true));
-    await interaction.message.edit({ components: [disabledRow] });
-  } catch (err) {
-    logger.warn('Could not disable queue buttons', { error: err.message });
-  }
+    try {
+        const disabledRow = ActionRowBuilder.from(
+            interaction.message.components[0],
+        );
+        disabledRow.components.forEach((btn) => btn.setDisabled(true));
+        await interaction.message.edit({ components: [disabledRow] });
+    } catch (err) {
+        logger.warn("Could not disable queue buttons", { error: err.message });
+    }
 }
