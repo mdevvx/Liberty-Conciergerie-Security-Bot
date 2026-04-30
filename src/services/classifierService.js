@@ -82,7 +82,7 @@ Reply with ONLY the classification word. No explanation. No punctuation. Just on
 
 function buildSystemPrompt(communityContext) {
     if (!communityContext) return BASE_SYSTEM_PROMPT;
-    return `${BASE_SYSTEM_PROMPT}\n\nAdditional community context — use this to better understand what is normal behaviour in this specific server:\n---\n${communityContext}\n---`;
+    return communityContext;
 }
 
 /**
