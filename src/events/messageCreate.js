@@ -8,7 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { REST, Routes } from 'discord.js';
-import { isBotEnabled, getGuildSettings } from '../services/supabase.js';
+import { isBotEnabled, getGuildSettings, getShadowChannelFor } from '../services/supabase.js';
 import { classifyMessage } from '../services/classifierService.js';
 import { shadowMessage } from '../services/shadowService.js';
 import { CLASSIFICATION } from '../config/constants.js';
@@ -51,6 +51,13 @@ export async function execute(message, client) {
   const enabled = await isBotEnabled(message.guildId);
   if (!enabled) return;
 
+  // ── Only process explicitly configured source channels ───────────────────
+  const settings = await getGuildSettings(message.guildId);
+  if (settings?.mod_queue_channel_id === message.channelId) return;
+
+  const isSourceChannel = await getShadowChannelFor(message.guildId, message.channelId);
+  if (!isSourceChannel) return;
+
   // ── Skip users who are already shadowed ──────────────────────────────────
   // Their messages land in the shadow channel only — no need to re-process them
   const member = message.member;
@@ -64,7 +71,7 @@ export async function execute(message, client) {
   if (member.permissions.has('ManageMessages')) return;
 
   // ── Classify ──────────────────────────────────────────────────────────────
-  const classification = await classifyMessage(message.content);
+  const classification = await classifyMessage(message.content, settings?.ai_system_prompt ?? null);
 
   if (classification === CLASSIFICATION.SAFE) return;
 

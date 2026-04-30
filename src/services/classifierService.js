@@ -70,14 +70,20 @@ function shouldClassify(content) {
 
 // ── Stage 2: Claude classification ───────────────────────────────────────────
 
-// System prompt is defined outside the function so it can be cached by the SDK
-const SYSTEM_PROMPT = `You are a content moderator for a professional Discord community.
+const BASE_SYSTEM_PROMPT = `You are a content moderator for a French-speaking professional Discord community.
 Classify the message below as exactly one of:
-  SAFE    — normal community message, no issues
-  SUSPECT — self-promotion, off-topic spam, borderline content, or suspicious links
-  TOXIC   — hate speech, harassment, threats, slurs, or clearly harmful content
+  SAFE    — normal community message, no issues. This includes member introductions, sharing personal or professional background, greetings, questions, discussions, and opinions — even if the person mentions their job, skills, or experience.
+  SUSPECT — unsolicited advertising, spam links, Discord/WhatsApp/Telegram server invites, referral codes, or messages whose primary purpose is to drive traffic or recruit members to an outside platform.
+  TOXIC   — hate speech, harassment, threats, slurs, or clearly harmful content.
+
+Key rule: Talking about oneself, one's career, or one's background is SAFE. Only flag as SUSPECT when the message is clearly trying to promote an external link, product, or server.
 
 Reply with ONLY the classification word. No explanation. No punctuation. Just one word.`;
+
+function buildSystemPrompt(communityContext) {
+    if (!communityContext) return BASE_SYSTEM_PROMPT;
+    return `${BASE_SYSTEM_PROMPT}\n\nAdditional community context — use this to better understand what is normal behaviour in this specific server:\n---\n${communityContext}\n---`;
+}
 
 /**
  * Classify a message using Claude Haiku.
@@ -85,9 +91,10 @@ Reply with ONLY the classification word. No explanation. No punctuation. Just on
  * Falls back to SAFE on API error (fail-open — don't punish users for API issues).
  *
  * @param {string} content
+ * @param {string|null} communityContext — guild's custom AI system prompt from /setprompt
  * @returns {Promise<string>}
  */
-export async function classifyMessage(content) {
+export async function classifyMessage(content, communityContext = null) {
     // Stage 1 — pre-filter
     if (!shouldClassify(content)) {
         return CLASSIFICATION.SAFE;
@@ -98,7 +105,7 @@ export async function classifyMessage(content) {
         const response = await anthropic.messages.create({
             model: config.anthropic.model,
             max_tokens: config.anthropic.maxTokens,
-            system: SYSTEM_PROMPT,
+            system: buildSystemPrompt(communityContext),
             messages: [{ role: "user", content }],
         });
 

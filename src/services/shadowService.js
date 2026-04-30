@@ -50,19 +50,7 @@ import logger from "../utils/logger.js";
 export async function shadowMessage(message, classification, client) {
     const { guild, author, channel, content } = message;
 
-    try {
-        // ── Step 1: Delete the original message ASAP ──────────────────────────────
-        await message.delete();
-        logger.info(`🗑️  Deleted message ${message.id}`, { guildId: guild.id });
-    } catch (err) {
-        logger.error("Failed to delete original message", {
-            guildId: guild.id,
-            error: err.message,
-        });
-        return;
-    }
-
-    // ── Step 2: Resolve routing ───────────────────────────────────────────────
+    // ── Step 1: Resolve routing ───────────────────────────────────────────────
     const [routing, settings] = await Promise.all([
         getShadowChannelFor(guild.id, channel.id),
         getGuildSettings(guild.id),
@@ -79,6 +67,18 @@ export async function shadowMessage(message, classification, client) {
     if (!settings?.mod_queue_channel_id) {
         logger.warn("Guild missing mod_queue_channel_id — skipping shadowban", {
             guildId: guild.id,
+        });
+        return;
+    }
+
+    // ── Step 2: Delete the original message ───────────────────────────────────
+    try {
+        await message.delete();
+        logger.info(`🗑️  Deleted message ${message.id}`, { guildId: guild.id });
+    } catch (err) {
+        logger.error("Failed to delete original message", {
+            guildId: guild.id,
+            error: err.message,
         });
         return;
     }
