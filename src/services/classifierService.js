@@ -101,6 +101,7 @@ export async function classifyMessage(content, communityContext = null) {
     }
 
     // Stage 2 — Claude API
+    logger.info(`🔍 Prompt mode: ${communityContext ? 'guild (' + communityContext.length + ' chars)' : 'base'}`);
     try {
         const response = await anthropic.messages.create({
             model: config.anthropic.model,
@@ -110,6 +111,7 @@ export async function classifyMessage(content, communityContext = null) {
         });
 
         const rawText = response.content[0]?.text?.trim();
+        logger.info(`🔍 Raw Claude response: "${rawText?.slice(0, 120)}"`);
 
         // Guild system prompts may instruct Claude to respond in JSON — handle both formats
         let result;
