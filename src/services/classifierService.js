@@ -109,9 +109,17 @@ export async function classifyMessage(content, communityContext = null) {
             messages: [{ role: "user", content }],
         });
 
-        const result = response.content[0]?.text?.trim().toUpperCase();
+        const rawText = response.content[0]?.text?.trim();
 
-        // Validate the response is one of our expected values
+        // Guild system prompts may instruct Claude to respond in JSON — handle both formats
+        let result;
+        try {
+            const parsed = JSON.parse(rawText);
+            result = parsed?.category?.trim().toUpperCase();
+        } catch {
+            result = rawText?.toUpperCase();
+        }
+
         if (Object.values(CLASSIFICATION).includes(result)) {
             logger.info(
                 `🔍 Classified: "${content.slice(0, 40)}..." → ${result}`,
@@ -119,9 +127,8 @@ export async function classifyMessage(content, communityContext = null) {
             return result;
         }
 
-        // Unexpected response — default to SAFE
         logger.warn(
-            `Unexpected classification response: "${result}" — defaulting to SAFE`,
+            `Unexpected classification response: "${rawText}" — defaulting to SAFE`,
         );
         return CLASSIFICATION.SAFE;
     } catch (err) {
