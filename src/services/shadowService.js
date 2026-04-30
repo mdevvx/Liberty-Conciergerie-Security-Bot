@@ -16,6 +16,7 @@ import {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
+    EmbedBuilder,
     WebhookClient,
 } from "discord.js";
 import {
@@ -26,7 +27,7 @@ import {
     getShadowChannelFor,
 } from "./supabase.js";
 import { modQueueEmbed, successEmbed, errorEmbed } from "../utils/embed.js";
-import { SHADOW_STATUS, EMOJI, CLASSIFICATION } from "../config/constants.js";
+import { SHADOW_STATUS, EMOJI, CLASSIFICATION, COLORS } from "../config/constants.js";
 import logger from "../utils/logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -414,7 +415,7 @@ export async function handleModQueueButton(interaction) {
             publicId,
             interaction.user.id,
         );
-        await disableQueueButtons(interaction);
+        await disableQueueButtons(interaction, "approve", interaction.user);
 
         return interaction.editReply({
             embeds: [
@@ -434,7 +435,7 @@ export async function handleModQueueButton(interaction) {
             null,
             interaction.user.id,
         );
-        await disableQueueButtons(interaction);
+        await disableQueueButtons(interaction, "reject", interaction.user);
 
         return interaction.editReply({
             embeds: [
@@ -460,7 +461,7 @@ export async function handleModQueueButton(interaction) {
             null,
             interaction.user.id,
         );
-        await disableQueueButtons(interaction);
+        await disableQueueButtons(interaction, "release", interaction.user);
 
         return interaction.editReply({
             embeds: [
@@ -579,14 +580,30 @@ async function restoreGroupRoles(guild, userId, shadowRoleId, groupRoleId) {
     }
 }
 
-async function disableQueueButtons(interaction) {
+async function disableQueueButtons(interaction, action, moderator) {
     try {
         const disabledRow = ActionRowBuilder.from(
             interaction.message.components[0],
         );
         disabledRow.components.forEach((btn) => btn.setDisabled(true));
-        await interaction.message.edit({ components: [disabledRow] });
+
+        const statusMap = {
+            approve: { label: `${EMOJI.APPROVE} Approved`, color: COLORS.SUCCESS },
+            reject:  { label: `${EMOJI.REJECT} Rejected`,  color: COLORS.ERROR },
+            release: { label: `${EMOJI.RELEASE} Released`, color: COLORS.NEUTRAL },
+        };
+        const { label, color } = statusMap[action];
+
+        const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+            .setColor(color)
+            .setFooter({ text: "Action taken" })
+            .addFields(
+                { name: "📋 Status",          value: label,                                       inline: true },
+                { name: `${EMOJI.MOD} Actioned By`, value: `<@${moderator.id}> (${moderator.tag})`, inline: true },
+            );
+
+        await interaction.message.edit({ embeds: [updatedEmbed], components: [disabledRow] });
     } catch (err) {
-        logger.warn("Could not disable queue buttons", { error: err.message });
+        logger.warn("Could not update queue message", { error: err.message });
     }
 }
