@@ -113,13 +113,16 @@ export async function classifyMessage(content, communityContext = null) {
         const rawText = response.content[0]?.text?.trim();
         logger.info(`🔍 Raw Claude response: "${rawText?.slice(0, 120)}"`);
 
+        // Strip markdown code fences (```json ... ``` or ``` ... ```) if present
+        const stripped = rawText?.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+
         // Guild system prompts may instruct Claude to respond in JSON — handle both formats
         let result;
         try {
-            const parsed = JSON.parse(rawText);
+            const parsed = JSON.parse(stripped);
             result = parsed?.category?.trim().toUpperCase();
         } catch {
-            result = rawText?.toUpperCase();
+            result = stripped?.toUpperCase();
         }
 
         if (Object.values(CLASSIFICATION).includes(result)) {
