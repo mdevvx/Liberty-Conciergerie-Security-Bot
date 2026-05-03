@@ -17,6 +17,7 @@ A Discord bot that silently intercepts suspicious messages, routes them to a pri
 ## Quick Start
 
 ### 1. Clone & install
+
 ```bash
 git clone <your-repo>
 cd shadowban-bot
@@ -24,26 +25,30 @@ npm install
 ```
 
 ### 2. Environment variables
+
 ```bash
 cp .env.example .env
 # Fill in all values in .env
 ```
 
 ### 3. Supabase schema
+
 - Open your Supabase project → **SQL Editor** → **New Query**
 - Paste and run the contents of `data/schema.sql`
 
 ### 4. Discord bot setup
+
 - Go to [Discord Developer Portal](https://discord.com/developers/applications)
 - Create a new application → Bot
 - Enable these **Privileged Gateway Intents**:
-  - ✅ Server Members Intent
-  - ✅ Message Content Intent
+    - ✅ Server Members Intent
+    - ✅ Message Content Intent
 - Copy the bot token → paste into `.env`
 - Invite the bot with these permissions:
-  - Manage Messages, Manage Roles, Manage Webhooks, Read Message History, Send Messages, View Channels
+    - Manage Messages, Manage Roles, Manage Webhooks, Read Message History, Send Messages, View Channels
 
 ### 5. Run
+
 ```bash
 npm start
 # or for development with auto-restart:
@@ -51,7 +56,9 @@ npm run dev
 ```
 
 ### 6. First-time server setup
+
 Once the bot is in your server:
+
 ```
 /sync          → register all slash commands globally (wait up to 1hr)
 /setup         → set your shadow channel + mod queue channel
@@ -61,46 +68,37 @@ Once the bot is in your server:
 
 ## Commands
 
-| Command | Permission | Description |
-|---|---|---|
-| `/setup` | Administrator | Set shadow channel + mod queue channel |
-| `/toggle` | Administrator | Enable or disable the bot in this server |
-| `/sync` | Administrator | Register all slash commands globally |
-| `/shadowban` | Manage Messages | Manually shadowban a user |
-| `/unshadowban` | Manage Messages | Remove shadowban from a user |
-| `/status` | Everyone | Show bot health and server stats |
-| `/help` | Everyone | List all commands |
+| Command        | Permission      | Description                              |
+| -------------- | --------------- | ---------------------------------------- |
+| `/setup`       | Administrator   | Set shadow channel + mod queue channel   |
+| `/toggle`      | Administrator   | Enable or disable the bot in this server |
+| `/sync`        | Administrator   | Register all slash commands globally     |
+| `/shadowban`   | Manage Messages | Manually shadowban a user                |
+| `/unshadowban` | Manage Messages | Remove shadowban from a user             |
+| `/status`      | Everyone        | Show bot health and server stats         |
+| `/help`        | Everyone        | List all commands                        |
 
 ---
 
 ## How the shadowban flow works
 
-```
-Member posts message
-        │
-        ▼
-  Pre-filter check (local regex)
-        │
-   ┌────┴────┐
- Clear     Suspicious
-   │            │
-  Skip      Claude API
-   │         (Haiku)
-   │            │
-   │    ┌───────┼───────┐
-   │  SAFE   SUSPECT  TOXIC
-   │    │        │       │
-   │   Skip    Shadowban flow:
-   │           1. Delete original (<300ms)
-   │           2. Assign Shadow role
-   │           3. Repost in shadow channel (webhook)
-   │           4. Post to mod queue with buttons
-   │                   │
-   │          Mod clicks a button:
-   │           ✅ Approve → repost publicly + remove Shadow role
-   │           🚫 Reject  → stays shadow-only forever
-   │           🔓 Release → remove Shadow role, don't repost
-```
+1. A member posts a message.
+2. A local regex pre-filter checks it instantly.
+   - If it looks clean → message goes through normally.
+   - If it looks suspicious → sent to Claude AI (Haiku) for classification.
+3. Claude returns one of three results:
+   - **Safe** → message goes through normally.
+   - **Toxic** → triggers the shadowban flow (see below).
+   - **Suspect** → also triggers the shadowban flow.
+4. **Shadowban flow** (runs in under 300ms):
+   - Original message is deleted.
+   - User is assigned the `Shadowed` role.
+   - Message is reposted in the shadow channel (visible only to shadowed users + mods).
+   - A mod queue card with action buttons is posted in the private mod channel.
+5. **Mod clicks a button:**
+   - ✅ Approve → message is reposted publicly and Shadow role is removed.
+   - 🚫 Reject → message stays in the shadow channel only, permanently.
+   - 🔓 Release → Shadow role is removed, message is not reposted.
 
 ---
 
@@ -116,6 +114,7 @@ You need two dedicated channels:
 ## Logs
 
 Logs are written to the `logs/` directory:
+
 - `logs/combined-YYYY-MM-DD.log` — all levels
 - `logs/error-YYYY-MM-DD.log` — errors only
 - Retained for 14 days (combined) and 30 days (errors)
