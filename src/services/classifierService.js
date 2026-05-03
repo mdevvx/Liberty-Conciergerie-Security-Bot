@@ -73,16 +73,18 @@ function shouldClassify(content) {
 const BASE_SYSTEM_PROMPT = `You are a content moderator for a French-speaking professional Discord community.
 Classify the message below as exactly one of:
   SAFE    — normal community message, no issues. This includes member introductions, sharing personal or professional background, greetings, questions, discussions, and opinions — even if the person mentions their job, skills, or experience.
-  SUSPECT — unsolicited advertising, spam links, Discord/WhatsApp/Telegram server invites, referral codes, or messages whose primary purpose is to drive traffic or recruit members to an outside platform.
+  SUSPECT — unsolicited advertising, spam links, Discord/WhatsApp/Telegram server invites, referral codes, unsolicited commercial offers with prices or rates, or messages whose primary purpose is to drive traffic, sell a service, or recruit members to an outside platform.
   TOXIC   — hate speech, harassment, threats, slurs, or clearly harmful content.
 
-Key rule: Talking about oneself, one's career, or one's background is SAFE. Only flag as SUSPECT when the message is clearly trying to promote an external link, product, or server.
+Key rule: Talking about oneself, one's career, or one's background is SAFE. Only flag as SUSPECT when the message is clearly trying to promote an external link, product, commercial service, or server.
 
 Reply with ONLY the classification word. No explanation. No punctuation. Just one word.`;
 
 function buildSystemPrompt(communityContext) {
     if (!communityContext) return BASE_SYSTEM_PROMPT;
-    return communityContext;
+    // Community context is appended as extra guidance — core classification
+    // instructions (SAFE/SUSPECT/TOXIC) always come from BASE_SYSTEM_PROMPT.
+    return `${BASE_SYSTEM_PROMPT}\n\nAdditional community context:\n${communityContext}`;
 }
 
 /**

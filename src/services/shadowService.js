@@ -150,59 +150,15 @@ export async function shadowMessage(message, classification, client) {
         return;
     }
 
-    // try {
-    //     const webhookClient = new WebhookClient({
-    //         id: webhook.id,
-    //         token: webhook.token,
-    //     });
-    //     const shadowMsg = await webhookClient.send(
-    //         buildRepostPayload({
-    //             content,
-    //             user: author,
-    //             member: message.member,
-    //         }),
-    //     );
-    //     shadowMessageId = shadowMsg.id;
-    //     logger.info(`👁️  Reposted in shadow channel: ${shadowMsg.id}`, {
-    //         guildId: guild.id,
-    //     });
-    // } catch (err) {
-    //     logger.error("Failed to send via webhook", {
-    //         guildId: guild.id,
-    //         webhookId: webhook.id,
-    //         error: err.message,
-    //         code: err.code,
-    //     });
-    //     return;
     try {
         const payload = buildRepostPayload({
             content,
             user: author,
             member: message.member,
         });
-        try {
-            const webhookClient = new WebhookClient({ url: webhook.url });
-            const shadowMsg = await webhookClient.send(payload);
-            shadowMessageId = shadowMsg.id;
-        } catch (err) {
-            // if (err.code !== 10015) throw err;
-            // // Webhook is orphaned — delete it and retry with a fresh one
-            // logger.warn("Stale webhook detected, recreating", {
-            //     guildId: guild.id,
-            //     webhookId: webhook.id,
-            // });
-            // await webhook.delete("Stale webhook").catch(() => {});
-            // const fresh = await shadowChannel.createWebhook({
-            //     name: "ShadowBot",
-            //     reason: "Shadowban bot — webhook retry after 10015",
-            // });
-            // const freshClient = new WebhookClient({ url: fresh.url });
-            // const shadowMsg = await freshClient.send(payload);
-            logger.error("Failed to send via webhook", {
-                error: err.message,
-            });
-            shadowMessageId = shadowMsg.id;
-        }
+        const webhookClient = new WebhookClient({ url: webhook.url });
+        const shadowMsg = await webhookClient.send(payload);
+        shadowMessageId = shadowMsg.id;
         logger.info(`👁️  Reposted in shadow channel: ${shadowMessageId}`, {
             guildId: guild.id,
         });
@@ -354,27 +310,9 @@ export async function handleModQueueButton(interaction) {
                 member,
                 fallbackName: record.author_tag.split("#")[0],
             });
-            try {
-                const webhookClient = new WebhookClient({ url: webhook.url });
-                const publicMsg = await webhookClient.send(payload);
-                publicId = publicMsg.id;
-            } catch (err) {
-                // if (err.code !== 10015) throw err;
-                // logger.warn("Stale webhook on public channel, recreating", {
-                //     webhookId: webhook.id,
-                // });
-                // await webhook.delete("Stale webhook").catch(() => {});
-                // const fresh = await publicChannel.createWebhook({
-                //     name: "ShadowBot",
-                //     reason: "Shadowban bot — webhook retry after 10015",
-                // });
-                // const freshClient = new WebhookClient({ url: fresh.url });
-                // const publicMsg = await freshClient.send(payload);
-                logger.error("Failed to send via webhook", {
-                    error: err.message,
-                });
-                publicId = publicMsg.id;
-            }
+            const webhookClient = new WebhookClient({ url: webhook.url });
+            const publicMsg = await webhookClient.send(payload);
+            publicId = publicMsg.id;
             logger.info(`👁️  Reposted in public channel: ${publicId}`, {
                 guildId: guild.id,
             });
@@ -383,24 +321,6 @@ export async function handleModQueueButton(interaction) {
                 error: err.message,
                 code: err.code,
             });
-            //     const webhookClient = new WebhookClient({
-            //         id: webhook.id,
-            //         token: webhook.token,
-            //     });
-            //     const publicMsg = await webhookClient.send(
-            //         buildRepostPayload({
-            //             content: record.content,
-            //             user: member.user,
-            //             member,
-            //             fallbackName: record.author_tag.split("#")[0],
-            //         }),
-            //     );
-            //     publicId = publicMsg.id;
-            // } catch (err) {
-            //     logger.error("Approve: failed to repost publicly", {
-            //         error: err.message,
-            //         code: err.code,
-            //     });
         }
 
         await restoreGroupRoles(
@@ -495,27 +415,6 @@ function buildRepostPayload({
     };
 }
 
-// async function getOrCreateWebhook(channel, client) {
-//     const webhooks = await channel.fetchWebhooks();
-//     const candidates = [...webhooks.values()].filter(
-//         (w) => w.owner?.id === client.user.id && w.token,
-//     );
-
-//     for (const wh of candidates) {
-//         try {
-//             // GET /webhooks/{id}/{token} — throws 10015 if the webhook no longer exists
-//             await wh.fetch(true);
-//             return wh;
-//         } catch {
-//             await wh.delete("Stale webhook cleanup").catch(() => {});
-//         }
-//     }
-
-//     return channel.createWebhook({
-//         name: "ShadowBot",
-//         reason: "Shadowban bot — webhook",
-//     });
-// }
 
 async function getOrCreateWebhook(channel, client) {
     const webhooks = await channel.fetchWebhooks();
