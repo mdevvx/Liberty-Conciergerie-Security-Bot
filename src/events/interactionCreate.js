@@ -11,6 +11,7 @@ import { MessageFlags } from 'discord.js';
 import { isBotEnabled } from '../services/supabase.js';
 import { handleModQueueButton } from '../services/shadowService.js';
 import { handleCategorySelect, handleRoleSelect } from '../commands/admin/setup.js';
+import { handleTimezoneSelect, handleTimezoneModal } from '../commands/admin/settings_timezone.js';
 import { handleAuditFix } from '../commands/admin/audit.js';
 import { disabledEmbed, errorEmbed } from '../utils/embed.js';
 import logger from '../utils/logger.js';
@@ -30,7 +31,7 @@ export async function execute(interaction, client) {
 
     // The /toggle command must always work, even when the bot is disabled,
     // so admins can re-enable it. Skip the enabled check for it.
-    const bypassToggle = ['toggle', 'setup', 'audit', 'sync', 'setprompt'].includes(interaction.commandName);
+    const bypassToggle = ['toggle', 'setup', 'audit', 'sync', 'setprompt', 'settings_timezone'].includes(interaction.commandName);
 
     if (!bypassToggle) {
       const enabled = await isBotEnabled(interaction.guildId);
@@ -61,7 +62,7 @@ export async function execute(interaction, client) {
     return;
   }
 
-  // ── String select menu (setup: category selection) ──────────────────────────
+  // ── String select menu ───────────────────────────────────────────────────────
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId === 'setup_cat_select') {
       try {
@@ -72,6 +73,45 @@ export async function execute(interaction, client) {
           error: err.message,
         });
         const embed = errorEmbed('Setup Failed', 'Something went wrong during setup. Check bot permissions and try again.');
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        } else {
+          await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
+      }
+    }
+
+    if (interaction.customId === 'tz_timezone_select') {
+      try {
+        await handleTimezoneSelect(interaction);
+      } catch (err) {
+        logger.error('Timezone select handler failed', {
+          guildId: interaction.guildId,
+          error: err.message,
+        });
+        const embed = errorEmbed('Timezone Failed', 'Something went wrong. Please try again.');
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        } else {
+          await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
+      }
+    }
+
+    return;
+  }
+
+  // ── Modal submissions ─────────────────────────────────────────────────────────
+  if (interaction.isModalSubmit()) {
+    if (interaction.customId.startsWith('tz_time_modal:')) {
+      try {
+        await handleTimezoneModal(interaction);
+      } catch (err) {
+        logger.error('Timezone modal handler failed', {
+          guildId: interaction.guildId,
+          error: err.message,
+        });
+        const embed = errorEmbed('Save Failed', 'Could not save timezone settings. Please try again.');
         if (interaction.replied || interaction.deferred) {
           await interaction.followUp({ embeds: [embed], flags: MessageFlags.Ephemeral });
         } else {

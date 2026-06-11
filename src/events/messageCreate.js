@@ -12,8 +12,12 @@ import { isBotEnabled, getGuildSettings, getShadowChannelFor } from '../services
 import { classifyMessage } from '../services/classifierService.js';
 import { shadowMessage } from '../services/shadowService.js';
 import { CLASSIFICATION } from '../config/constants.js';
+import { isInQuietWindow } from '../utils/timezone.js';
 import { config } from '../config/config.js';
 import logger from '../utils/logger.js';
+
+// Messages from this user are always accepted — never classified or moderated
+const ALWAYS_ACCEPTED_IDS = new Set(['1509590934277460128']);
 
 export const name = 'messageCreate';
 export const once = false;
@@ -21,6 +25,9 @@ export const once = false;
 export async function execute(message, client) {
   // ── Ignore bots and DMs ──────────────────────────────────────────────────
   if (message.author.bot || !message.guild) return;
+
+  // ── Always-accepted users (e.g. Ambassadrice) ────────────────────────────
+  if (ALWAYS_ACCEPTED_IDS.has(message.author.id)) return;
 
   // ── !sync — register slash commands (admin only, no slash commands needed) ─
   if (message.content.trim() === 'sb!sync') {
@@ -74,6 +81,31 @@ export async function execute(message, client) {
   const classification = await classifyMessage(message.content, settings?.ai_system_prompt ?? null);
 
   if (classification === CLASSIFICATION.SAFE) return;
+
+  // ── Quiet-hours check (SUSPECT only) ──────────────────────────────────────
+  // During the configured window, silently delete and take no further action.
+  if (
+    classification === CLASSIFICATION.SUSPECT &&
+    settings?.quiet_timezone &&
+    settings?.quiet_start &&
+    settings?.quiet_end &&
+    isInQuietWindow(settings.quiet_timezone, settings.quiet_start, settings.quiet_end)
+  ) {
+    try {
+      await message.delete();
+      logger.info(`🌙 Quiet hours — silently deleted SUSPECT message`, {
+        guildId: message.guildId,
+        author:  message.author.tag,
+        window:  `${settings.quiet_start}–${settings.quiet_end} ${settings.quiet_timezone}`,
+      });
+    } catch (err) {
+      logger.error('Failed to delete message during quiet hours', {
+        guildId: message.guildId,
+        error:   err.message,
+      });
+    }
+    return;
+  }
 
   // ── Trigger shadowban flow ────────────────────────────────────────────────
   logger.info(`🚨 Triggering shadowban: ${classification} | ${message.author.tag}`, {
