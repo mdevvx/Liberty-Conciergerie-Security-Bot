@@ -8,7 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { REST, Routes } from 'discord.js';
-import { isBotEnabled, getGuildSettings, getShadowChannelFor } from '../services/supabase.js';
+import { isBotEnabled, getGuildSettings, getShadowChannelFor, getWhitelistedRoles } from '../services/supabase.js';
 import { classifyMessage } from '../services/classifierService.js';
 import { shadowMessage } from '../services/shadowService.js';
 import { CLASSIFICATION } from '../config/constants.js';
@@ -76,6 +76,10 @@ export async function execute(message, client) {
 
   // ── Skip messages from users with Manage Messages permission (staff) ──────
   if (member.permissions.has('ManageMessages')) return;
+
+  // ── Skip users who hold a whitelisted role ───────────────────────────────
+  const whitelistedRoles = await getWhitelistedRoles(message.guildId);
+  if (whitelistedRoles.size > 0 && member.roles.cache.some((r) => whitelistedRoles.has(r.id))) return;
 
   // ── Classify ──────────────────────────────────────────────────────────────
   const classification = await classifyMessage(message.content, settings?.ai_system_prompt ?? null);

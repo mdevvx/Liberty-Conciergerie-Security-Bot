@@ -291,6 +291,85 @@ export async function getShadowChannelFor(guildId, originalChannelId) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WHITELIST ROLES
+// Roles whose members are fully exempt from message classification.
+// Table: shadowban_whitelist_roles (guild_id, role_id)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _whitelistCache = new Map(); // guildId → { roleIds: Set<string>, until: number }
+
+/**
+ * Return the set of whitelisted role IDs for a guild.
+ * Cached for 60 s; call invalidateWhitelistCache() after writes.
+ * @param {string} guildId
+ * @returns {Promise<Set<string>>}
+ */
+export async function getWhitelistedRoles(guildId) {
+  const hit = _whitelistCache.get(guildId);
+  if (hit && Date.now() < hit.until) return hit.roleIds;
+
+  const { data, error } = await supabase
+    .from('shadowban_whitelist_roles')
+    .select('role_id')
+    .eq('guild_id', guildId);
+
+  if (error) {
+    logger.error('getWhitelistedRoles failed', { guildId, error: error.message });
+    return new Set();
+  }
+
+  const roleIds = new Set((data ?? []).map((r) => r.role_id));
+  _whitelistCache.set(guildId, { roleIds, until: Date.now() + 60_000 });
+  return roleIds;
+}
+
+/**
+ * Add a role to the whitelist. No-op if it is already whitelisted.
+ * @param {string} guildId
+ * @param {string} roleId
+ */
+export async function addWhitelistedRole(guildId, roleId) {
+  const { error } = await supabase
+    .from('shadowban_whitelist_roles')
+    .upsert({ guild_id: guildId, role_id: roleId }, { onConflict: 'guild_id,role_id' });
+
+  if (error) {
+    logger.error('addWhitelistedRole failed', { guildId, roleId, error: error.message });
+    throw error;
+  }
+
+  invalidateWhitelistCache(guildId);
+}
+
+/**
+ * Remove a role from the whitelist.
+ * @param {string} guildId
+ * @param {string} roleId
+ */
+export async function removeWhitelistedRole(guildId, roleId) {
+  const { error } = await supabase
+    .from('shadowban_whitelist_roles')
+    .delete()
+    .eq('guild_id', guildId)
+    .eq('role_id', roleId);
+
+  if (error) {
+    logger.error('removeWhitelistedRole failed', { guildId, roleId, error: error.message });
+    throw error;
+  }
+
+  invalidateWhitelistCache(guildId);
+}
+
+/**
+ * Bust the whitelist role cache for a guild.
+ * @param {string} guildId
+ */
+export function invalidateWhitelistCache(guildId) {
+  _whitelistCache.delete(guildId);
+}
+
 /**
  * Get all unique (group_role_id, shadow_role_id) pairs configured for a guild.
  * Used by manual shadowban/unshadowban to find which roles to swap.

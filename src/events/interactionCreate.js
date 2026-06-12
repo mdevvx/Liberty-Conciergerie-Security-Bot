@@ -31,7 +31,7 @@ export async function execute(interaction, client) {
 
     // The /toggle command must always work, even when the bot is disabled,
     // so admins can re-enable it. Skip the enabled check for it.
-    const bypassToggle = ['toggle', 'setup', 'audit', 'sync', 'setprompt', 'settings_timezone'].includes(interaction.commandName);
+    const bypassToggle = ['toggle', 'setup', 'audit', 'sync', 'setprompt', 'settings_timezone', 'whitelist_role'].includes(interaction.commandName);
 
     if (!bypassToggle) {
       const enabled = await isBotEnabled(interaction.guildId);
