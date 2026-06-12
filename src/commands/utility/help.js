@@ -14,9 +14,9 @@ export async function execute(interaction, client) {
   // Group commands by their folder category
   // We infer category from the command file path stored at load time if available,
   // otherwise we categorise by name pattern
-  const adminCommands = ['toggle', 'sync', 'setup', 'audit'];
+  const adminCommands = ['toggle', 'sync', 'setup', 'audit', 'setprompt', 'settings_timezone', 'whitelist_role'];
   const modCommands = ['shadowban', 'unshadowban'];
-  const utilityCommands = ['status', 'help'];
+  const utilityCommands = ['ask', 'status', 'help'];
 
   const format = (names) =>
     names

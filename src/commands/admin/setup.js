@@ -157,7 +157,7 @@ export async function handleRoleSelect(interaction) {
     if (!shadowRole) {
       shadowRole = await guild.roles.create({
         name: shadowRoleName,
-        colors: { primaryColor: 0x2c2f33 },
+        color: 0x2c2f33,
         hoist: false,
         mentionable: false,
         reason: 'Shadowban bot — group shadow role',

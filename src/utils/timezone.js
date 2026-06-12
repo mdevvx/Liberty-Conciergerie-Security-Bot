@@ -43,7 +43,7 @@ export function isInQuietWindow(timezone, quietStart, quietEnd) {
     timeZone: timezone,
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    hourCycle: 'h23',
   }).formatToParts(now);
 
   const hour   = parseInt(parts.find((p) => p.type === 'hour')?.value   ?? '0', 10);

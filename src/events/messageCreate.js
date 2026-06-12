@@ -16,8 +16,8 @@ import { isInQuietWindow } from '../utils/timezone.js';
 import { config } from '../config/config.js';
 import logger from '../utils/logger.js';
 
-// Messages from this user are always accepted — never classified or moderated
-const ALWAYS_ACCEPTED_IDS = new Set(['1509590934277460128']);
+// Members holding any of these role IDs are always accepted — never classified or moderated
+const ALWAYS_ACCEPTED_ROLE_IDS = new Set(['1509590934277460128']);
 
 export const name = 'messageCreate';
 export const once = false;
@@ -26,12 +26,12 @@ export async function execute(message, client) {
   // ── Ignore bots and DMs ──────────────────────────────────────────────────
   if (message.author.bot || !message.guild) return;
 
-  // ── Always-accepted users (e.g. Ambassadrice) ────────────────────────────
-  if (ALWAYS_ACCEPTED_IDS.has(message.author.id)) return;
+  // ── Always-accepted roles (e.g. Ambassadrice) ────────────────────────────
+  if (message.member?.roles.cache.some((r) => ALWAYS_ACCEPTED_ROLE_IDS.has(r.id))) return;
 
   // ── !sync — register slash commands (admin only, no slash commands needed) ─
   if (message.content.trim() === 'sb!sync') {
-    if (!message.member.permissions.has('Administrator')) {
+    if (!message.member?.permissions.has('Administrator')) {
       return message.reply('You need Administrator permission to sync commands.');
     }
 
