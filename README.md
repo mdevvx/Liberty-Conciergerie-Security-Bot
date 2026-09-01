@@ -57,12 +57,19 @@ npm run dev
 
 ### 6. First-time server setup
 
+Slash commands register automatically. On startup the bot pushes commands to
+**every server it's a member of** (guild-scoped, so they never leak into servers
+the bot isn't in), and it re-registers whenever it joins a new server. This also
+keeps permission gating current — admin commands stay hidden from normal members.
+
 Once the bot is in your server:
 
 ```
-/sync          → register all slash commands globally (wait up to 1hr)
 /setup         → set your shadow channel + mod queue channel
 ```
+
+If commands ever fail to appear, an admin can force a re-sync with `/sync` or by
+posting `sb!sync` in any channel.
 
 ---
 
@@ -72,7 +79,7 @@ Once the bot is in your server:
 | -------------- | --------------- | ---------------------------------------- |
 | `/setup`       | Administrator   | Set shadow channel + mod queue channel   |
 | `/toggle`      | Administrator   | Enable or disable the bot in this server |
-| `/sync`        | Administrator   | Register all slash commands globally     |
+| `/sync`        | Administrator   | Force a re-register of all slash commands |
 | `/shadowban`   | Manage Messages | Manually shadowban a user                |
 | `/unshadowban` | Manage Messages | Remove shadowban from a user             |
 | `/status`      | Everyone        | Show bot health and server stats         |

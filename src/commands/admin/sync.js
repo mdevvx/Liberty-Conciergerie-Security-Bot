@@ -1,57 +1,49 @@
 // src/commands/admin/sync.js
 // ─────────────────────────────────────────────────────────────────────────────
-// /sync — Register all slash commands globally with Discord.
-// Only bot owner / Administrator can run this.
-// Global commands take up to 1 hour to propagate — guild commands are instant
-// but that's handled by Railway deploy, not a runtime command.
+// /sync — Re-register all slash commands for every server the bot is in.
+// Only Administrators can run this.
+//
+// Commands are registered per-guild (instant) — never globally — so they only
+// show up where the bot is actually a member, and Discord always has the
+// current permission gating (admin commands stay hidden from normal members).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SlashCommandBuilder, PermissionFlagsBits, REST, Routes, MessageFlags } from 'discord.js';
-import { config } from '../../config/config.js';
+import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } from 'discord.js';
+import { deployCommands } from '../../utils/deployCommands.js';
 import { successEmbed, errorEmbed, infoEmbed } from '../../utils/embed.js';
 import { EMOJI } from '../../config/constants.js';
 import logger from '../../utils/logger.js';
 
 export const data = new SlashCommandBuilder()
   .setName('sync')
-  .setDescription('Sync all slash commands globally with Discord (Admin only)')
+  .setDescription('Re-register all slash commands for every server the bot is in (Admin only)')
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 export async function execute(interaction, client) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   try {
-    // Build the payload from the loaded commands collection
-    const commandPayloads = client.commands.map((cmd) => cmd.data.toJSON());
-
-    const rest = new REST().setToken(config.discord.token);
-
-    logger.info(`🔄 Syncing ${commandPayloads.length} commands globally...`, {
-      guildId: interaction.guildId,
-    });
-
     await interaction.editReply({
-      embeds: [infoEmbed('Syncing...', `${EMOJI.LOADING} Registering **${commandPayloads.length}** commands with Discord. Please wait...`)],
+      embeds: [infoEmbed('Syncing…', `${EMOJI.LOADING} Re-registering commands with Discord. Please wait…`)],
     });
 
-    // Register globally — takes up to 1 hour to propagate
-    await rest.put(
-      Routes.applicationCommands(config.discord.clientId),
-      { body: commandPayloads }
-    );
-
-    const commandList = commandPayloads.map((c) => `\`/${c.name}\``).join(', ');
-
-    logger.info(`✅ Synced ${commandPayloads.length} global commands`, {
+    logger.info('🔄 /sync invoked', {
       guildId: interaction.guildId,
-      mod: interaction.user.tag,
+      admin: interaction.user.tag,
+    });
+
+    const { guilds, total, commands } = await deployCommands(client);
+
+    logger.info(`✅ /sync complete — ${commands} commands to ${guilds}/${total} guild(s)`, {
+      guildId: interaction.guildId,
+      admin: interaction.user.tag,
     });
 
     return interaction.editReply({
       embeds: [
         successEmbed(
           'Commands Synced',
-          `Successfully registered **${commandPayloads.length}** commands globally.\n\n${commandList}\n\n⏳ Global commands may take **up to 1 hour** to appear in all servers.`
+          `Registered **${commands}** commands to **${guilds}/${total}** server${total !== 1 ? 's' : ''}.\n\nGuild-scoped registration is instant — no propagation delay.`,
         ),
       ],
     });

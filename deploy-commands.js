@@ -1,41 +1,49 @@
 // deploy-commands.js
-// Run once to register all slash commands with Discord:
-//   node deploy-commands.js          ← registers to THIS guild instantly
-//   node deploy-commands.js --global ← registers globally (up to 1 hour delay)
+// ─────────────────────────────────────────────────────────────────────────────
+// Standalone command registration (without booting the bot).
+//
+//   node deploy-commands.js            ← registers to DEV_GUILD_ID (instant) and
+//                                        clears the global command set
+//   node deploy-commands.js --clear    ← removes commands from DEV_GUILD_ID
+//
+// The running bot also re-registers commands to every guild it's in on startup
+// (see src/events/ready.js), so this script is only needed for local testing.
+// Global registration is intentionally not supported: global commands show up
+// in every server that authorised the app, not just the ones the bot joined.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import 'dotenv/config';
 import { REST, Routes, Collection } from 'discord.js';
 import { loadCommands } from './src/handlers/commandHandler.js';
 import { config } from './src/config/config.js';
-import { readdirSync } from 'fs';
 
 const client = { commands: new Collection() };
 await loadCommands(client);
 
-const payload = client.commands.map((cmd) => cmd.data.toJSON());
 const rest = new REST().setToken(config.discord.token);
+const guildId = process.env.DEV_GUILD_ID;
 
-const isGlobal = process.argv.includes('--global');
-
-if (isGlobal) {
-  await rest.put(Routes.applicationCommands(config.discord.clientId), { body: payload });
-  console.log(`✅ Registered ${payload.length} commands globally (up to 1 hour to propagate).`);
-} else {
-  // Guild-scoped = instant. Grab the first guild the bot is in.
-  const tempClient = { guilds: { cache: new Map() } };
-  const guildId = process.env.DEV_GUILD_ID;
-
-  if (!guildId) {
-    console.error('❌ Set DEV_GUILD_ID in your .env to use guild (instant) registration.');
-    console.error('   Or run with --global for global registration.');
-    process.exit(1);
-  }
-
-  await rest.put(
-    Routes.applicationGuildCommands(config.discord.clientId, guildId),
-    { body: payload }
-  );
-  console.log(`✅ Registered ${payload.length} commands to guild ${guildId} (instant).`);
+if (!guildId) {
+  console.error('❌ Set DEV_GUILD_ID in your .env (right-click your server → Copy Server ID).');
+  process.exit(1);
 }
 
-payload.forEach((c) => console.log(`   /${c.name}`));
+const clear = process.argv.includes('--clear');
+const payload = clear ? [] : client.commands.map((cmd) => cmd.data.toJSON());
+
+// Always wipe global commands — stale global copies (e.g. ones registered
+// before permission gating was added) otherwise keep showing to everyone.
+await rest.put(Routes.applicationCommands(config.discord.clientId), { body: [] });
+console.log('🧹 Cleared global commands.');
+
+await rest.put(
+  Routes.applicationGuildCommands(config.discord.clientId, guildId),
+  { body: payload }
+);
+
+if (clear) {
+  console.log(`✅ Cleared commands from guild ${guildId}.`);
+} else {
+  console.log(`✅ Registered ${payload.length} commands to guild ${guildId} (instant).`);
+  payload.forEach((c) => console.log(`   /${c.name}`));
+}

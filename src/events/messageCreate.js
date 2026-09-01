@@ -7,13 +7,12 @@
 //   4. If SUSPECT or TOXIC → trigger shadowban flow
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { REST, Routes } from 'discord.js';
 import { isBotEnabled, getGuildSettings, getShadowChannelFor, getWhitelistedRoles } from '../services/supabase.js';
 import { classifyMessage } from '../services/classifierService.js';
 import { shadowMessage } from '../services/shadowService.js';
 import { CLASSIFICATION } from '../config/constants.js';
 import { isInQuietWindow } from '../utils/timezone.js';
-import { config } from '../config/config.js';
+import { deployCommands } from '../utils/deployCommands.js';
 import logger from '../utils/logger.js';
 
 // Members holding any of these role IDs are always accepted — never classified or moderated
@@ -29,27 +28,23 @@ export async function execute(message, client) {
   // ── Always-accepted roles (e.g. Ambassadrice) ────────────────────────────
   if (message.member?.roles.cache.some((r) => ALWAYS_ACCEPTED_ROLE_IDS.has(r.id))) return;
 
-  // ── !sync — register slash commands (admin only, no slash commands needed) ─
+  // ── sb!sync — re-register slash commands for THIS server only (admin only) ──
+  // Escape hatch for when the slash commands themselves aren't showing up yet.
+  // Registers to the guild where the message was sent — nowhere else, and the
+  // global command set is left untouched.
   if (message.content.trim() === 'sb!sync') {
     if (!message.member?.permissions.has('Administrator')) {
       return message.reply('You need Administrator permission to sync commands.');
     }
 
-    const payload = client.commands.map((cmd) => cmd.data.toJSON());
-    const rest = new REST().setToken(config.discord.token);
-
     try {
-      await message.reply(`⏳ Registering ${payload.length} commands to this server...`);
-      await rest.put(
-        Routes.applicationGuildCommands(config.discord.clientId, message.guildId),
-        { body: payload }
-      );
-      const list = payload.map((c) => `\`/${c.name}\``).join(', ');
-      await message.reply(`✅ Done! Registered: ${list}`);
-      logger.info(`Commands synced via !sync`, { guildId: message.guildId, user: message.author.tag });
+      await message.reply('⏳ Re-registering commands for this server…');
+      const { commands } = await deployCommands(client, { guildId: message.guildId });
+      await message.reply(`✅ Done! Registered ${commands} commands to this server.`);
+      logger.info('Commands synced via sb!sync', { guildId: message.guildId, user: message.author.tag });
     } catch (err) {
       await message.reply(`❌ Sync failed: ${err.message}`);
-      logger.error('!sync failed', { error: err.message });
+      logger.error('sb!sync failed', { error: err.message });
     }
     return;
   }
