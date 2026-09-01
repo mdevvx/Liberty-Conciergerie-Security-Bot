@@ -5,7 +5,7 @@
 // of previous /ask messages — one-shot per invocation).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } from 'discord.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { getAiSystemPrompt } from '../../services/supabase.js';
 import { warningEmbed, errorEmbed } from '../../utils/embed.js';
@@ -18,6 +18,7 @@ const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 export const data = new SlashCommandBuilder()
   .setName('ask')
   .setDescription('Ask the AI a question using the server\'s configured context')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addStringOption((opt) =>
     opt
       .setName('message')

@@ -3,18 +3,19 @@
 // /help — Show all available commands grouped by category.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { COLORS, EMOJI } from '../../config/constants.js';
 
 export const data = new SlashCommandBuilder()
   .setName('help')
-  .setDescription('Show all available commands and what they do');
+  .setDescription('Show all available commands and what they do')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 export async function execute(interaction, client) {
   // Group commands by their folder category
   // We infer category from the command file path stored at load time if available,
   // otherwise we categorise by name pattern
-  const adminCommands = ['toggle', 'sync', 'setup', 'audit', 'setprompt', 'settings_timezone', 'whitelist_role'];
+  const adminCommands = ['toggle', 'setup', 'audit', 'setprompt', 'settings_timezone', 'whitelist_role'];
   const modCommands = ['shadowban', 'unshadowban'];
   const utilityCommands = ['ask', 'status', 'help'];
 
@@ -45,7 +46,7 @@ export async function execute(interaction, client) {
         value: format(utilityCommands) || 'None loaded',
       },
     )
-    .setFooter({ text: 'Admin commands require Administrator • Mod commands require Manage Messages' })
+    .setFooter({ text: 'All commands require Administrator permission' })
     .setTimestamp();
 
   return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });

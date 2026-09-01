@@ -13,7 +13,7 @@ import logger from '../../utils/logger.js';
 export const data = new SlashCommandBuilder()
   .setName('unshadowban')
   .setDescription('Remove the shadowban from a user — restores their group role')
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addUserOption((opt) =>
     opt.setName('user').setDescription('The user to unshadowban').setRequired(true),
   )

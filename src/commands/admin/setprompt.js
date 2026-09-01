@@ -28,7 +28,7 @@ export async function execute(interaction) {
 
   if (!attachment) {
     return interaction.editReply({
-      embeds: [errorEmbed('No File Attached', 'Please attach a `.txt` file when running this command.\n\nIf the file option is not showing, run `/sync` first to update the command.')],
+      embeds: [errorEmbed('No File Attached', 'Please attach a `.txt` file when running this command.\n\nIf the file option is not showing, post `sb!sync` in any channel to refresh the commands.')],
     });
   }
 

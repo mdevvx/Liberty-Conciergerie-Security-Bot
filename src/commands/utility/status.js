@@ -4,7 +4,7 @@
 // Visible to anyone (no permission requirement) but shows guild-specific data.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { getGuildSettings } from '../../services/supabase.js';
 import supabase from '../../services/supabase.js';
 import { COLORS, EMOJI } from '../../config/constants.js';
@@ -13,7 +13,8 @@ import logger from '../../utils/logger.js';
 
 export const data = new SlashCommandBuilder()
   .setName('status')
-  .setDescription('Show the current bot status and configuration for this server');
+  .setDescription('Show the current bot status and configuration for this server')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 export async function execute(interaction, client) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });

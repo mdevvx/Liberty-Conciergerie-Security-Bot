@@ -14,7 +14,7 @@ import logger from '../../utils/logger.js';
 export const data = new SlashCommandBuilder()
   .setName('shadowban')
   .setDescription('Manually shadowban a user — removes their group role and assigns their shadow role')
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addUserOption((opt) =>
     opt.setName('user').setDescription('The user to shadowban').setRequired(true),
   )

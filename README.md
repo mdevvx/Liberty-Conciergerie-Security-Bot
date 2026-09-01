@@ -68,22 +68,23 @@ Once the bot is in your server:
 /setup         → set your shadow channel + mod queue channel
 ```
 
-If commands ever fail to appear, an admin can force a re-sync with `/sync` or by
-posting `sb!sync` in any channel.
+If commands ever fail to appear, an admin can post `sb!sync` in any channel to
+re-register them for that server.
 
 ---
 
 ## Commands
 
-| Command        | Permission      | Description                              |
-| -------------- | --------------- | ---------------------------------------- |
-| `/setup`       | Administrator   | Set shadow channel + mod queue channel   |
-| `/toggle`      | Administrator   | Enable or disable the bot in this server |
-| `/sync`        | Administrator   | Force a re-register of all slash commands |
-| `/shadowban`   | Manage Messages | Manually shadowban a user                |
-| `/unshadowban` | Manage Messages | Remove shadowban from a user             |
-| `/status`      | Everyone        | Show bot health and server stats         |
-| `/help`        | Everyone        | List all commands                        |
+All commands require **Administrator** permission.
+
+| Command        | Description                               |
+| -------------- | ---------------------------------------- |
+| `/setup`       | Set shadow channel + mod queue channel   |
+| `/toggle`      | Enable or disable the bot in this server |
+| `/shadowban`   | Manually shadowban a user                |
+| `/unshadowban` | Remove shadowban from a user             |
+| `/status`      | Show bot health and server stats         |
+| `/help`        | List all commands                        |
 
 ---
 
