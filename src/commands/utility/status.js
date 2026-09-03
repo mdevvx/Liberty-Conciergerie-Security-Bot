@@ -54,6 +54,15 @@ export async function execute(interaction, client) {
       .eq('guild_id', interaction.guildId)
       .eq('status', 'pending');
 
+    const { count: pendingSuspect } = await supabase
+      .from('shadowban_messages')
+      .select('*', { count: 'exact', head: true })
+      .eq('guild_id', interaction.guildId)
+      .eq('status', 'pending')
+      .eq('classification', 'SUSPECT');
+
+    const pendingToxic = (pendingCount ?? 0) - (pendingSuspect ?? 0);
+
     // ── Uptime ─────────────────────────────────────────────────────────────
     const uptimeSeconds = Math.floor(process.uptime());
     const h = Math.floor(uptimeSeconds / 3600);
@@ -148,7 +157,14 @@ export async function execute(interaction, client) {
 
         { name: '🌐 Servers', value: `\`${client.guilds.cache.size}\``, inline: true },
         { name: '📊 Total Shadowed', value: `\`${totalShadowed ?? 0}\``, inline: true },
-        { name: `${EMOJI.LOADING} Pending Review`, value: `\`${pendingCount ?? 0}\``, inline: true },
+        {
+          name: `${EMOJI.LOADING} Pending Review`,
+          value: (pendingCount ?? 0) === 0
+            ? '`0`'
+            : `\`${pendingCount}\` — ${pendingSuspect ?? 0} SUSPECT (awaiting mod action)`
+              + (pendingToxic > 0 ? ` · ${pendingToxic} TOXIC (silent, no card)` : ''),
+          inline: false,
+        },
       )
       .setFooter({ text: `Requested by ${interaction.user.tag}` })
       .setTimestamp();
