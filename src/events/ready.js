@@ -5,8 +5,7 @@
 
 import { ActivityType } from "discord.js";
 import { deployCommands } from "../utils/deployCommands.js";
-import { getLogChannelId } from "../services/supabase.js";
-import logger, { setLogSink } from "../utils/logger.js";
+import logger from "../utils/logger.js";
 
 export const name = "clientReady";
 export const once = true;
@@ -17,9 +16,6 @@ export async function execute(client) {
     //     activities: [{ name: "", type: ActivityType.Watching }],
     //     status: "online",
     // });
-
-    // Start mirroring guild-tagged logs into each guild's /log_channel.
-    setLogSink(client, getLogChannelId);
 
     logger.info(`🤖 Bot online: ${client.user.tag}`);
     logger.info(`📡 Connected to ${client.guilds.cache.size} guild(s)`);

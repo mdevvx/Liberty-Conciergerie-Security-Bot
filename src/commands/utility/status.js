@@ -5,7 +5,6 @@
 //   • Setup status, mod-queue channel, monitored channel count
 //   • Quiet-hours window (and whether it's active right now)
 //   • Whitelisted roles
-//   • Activity-log channel
 //   • AI system prompt
 //   • Message stats (total shadowed / pending review)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,17 +115,6 @@ export async function execute(interaction, client) {
         ? `${NO} None`
         : [...whitelistRoleIds].map((id) => `<@&${id}>`).join(', ');
 
-    // ── Activity-log channel ──────────────────────────────────────────────
-    const logChannelId = settings?.log_channel_id ?? null;
-    const logChannelExists = logChannelId
-      ? !!(await interaction.guild.channels.fetch(logChannelId).catch(() => null))
-      : false;
-    const logChannelStr = !logChannelId
-      ? `${NO} Not configured — use \`/log_channel\``
-      : logChannelExists
-        ? `${YES} <#${logChannelId}>`
-        : `${EMOJI.WARNING} <#${logChannelId}> — channel missing`;
-
     // ── AI system prompt ───────────────────────────────────────────────────
     const promptStr = settings?.ai_system_prompt
       ? `${YES} Set (${settings.ai_system_prompt.length.toLocaleString()} chars)`
@@ -152,7 +140,6 @@ export async function execute(interaction, client) {
         },
         { name: '🌙 Quiet Hours', value: quietStr, inline: false },
         { name: '🛡️ Whitelisted Roles', value: whitelistStr, inline: false },
-        { name: '📝 Activity Log', value: logChannelStr, inline: false },
         { name: '🤖 AI System Prompt', value: promptStr, inline: false },
 
         { name: '🌐 Servers', value: `\`${client.guilds.cache.size}\``, inline: true },

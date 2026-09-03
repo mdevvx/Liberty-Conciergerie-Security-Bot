@@ -94,17 +94,16 @@ function buildSystemPrompt(communityContext) {
  *
  * @param {string} content
  * @param {string|null} communityContext — guild's custom AI system prompt from /setprompt
- * @param {string|null} guildId — tags the logs so they reach the guild's /log_channel
  * @returns {Promise<string>}
  */
-export async function classifyMessage(content, communityContext = null, guildId = null) {
+export async function classifyMessage(content, communityContext = null) {
     // Stage 1 — pre-filter
     if (!shouldClassify(content)) {
         return CLASSIFICATION.SAFE;
     }
 
     // Stage 2 — Claude API
-    logger.info(`🔍 Prompt mode: ${communityContext ? 'guild (' + communityContext.length + ' chars)' : 'base'}`, { guildId });
+    logger.info(`🔍 Prompt mode: ${communityContext ? 'guild (' + communityContext.length + ' chars)' : 'base'}`);
     try {
         const response = await anthropic.messages.create({
             model: config.anthropic.model,
@@ -114,7 +113,7 @@ export async function classifyMessage(content, communityContext = null, guildId 
         });
 
         const rawText = response.content[0]?.text?.trim();
-        logger.info(`🔍 Raw Claude response: "${rawText?.slice(0, 120)}"`, { guildId });
+        logger.info(`🔍 Raw Claude response: "${rawText?.slice(0, 120)}"`);
 
         // Strip markdown code fences (```json ... ``` or ``` ... ```) if present
         const stripped = rawText?.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
@@ -131,19 +130,17 @@ export async function classifyMessage(content, communityContext = null, guildId 
         if (Object.values(CLASSIFICATION).includes(result)) {
             logger.info(
                 `🔍 Classified: "${content.slice(0, 40)}..." → ${result}`,
-                { guildId },
             );
             return result;
         }
 
         logger.warn(
             `Unexpected classification response: "${rawText}" — defaulting to SAFE`,
-            { guildId },
         );
         return CLASSIFICATION.SAFE;
     } catch (err) {
         // On API failure, fail open (don't shadowban innocent users due to API issues)
-        logger.error("Claude classification API error", { guildId, error: err.message });
+        logger.error("Claude classification API error", { error: err.message });
         return CLASSIFICATION.SAFE;
     }
 }
