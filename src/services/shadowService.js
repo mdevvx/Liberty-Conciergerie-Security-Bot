@@ -3,12 +3,11 @@
 // Core shadowban logic:
 //   shadowMessage()         — intercepts a message, deletes it, reposts in the
 //                             group-specific shadow channel, pushes to mod queue
-//   handleModQueueButton()  — handles Approve / Reject / Release button clicks
+//   handleModQueueButton()  — handles Approve / Reject button clicks
 //
 // Per-group role flow:
 //   Shadowban  → remove Group N role  + add Shadowed N role
 //   Approve    → repost publicly + remove Shadowed N role + add Group N role
-//   Release    → remove Shadowed N role + add Group N role (no repost)
 //   Reject     → keep Shadowed N role (user stays invisible in their group)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -142,12 +141,30 @@ export async function shadowMessage(message, classification, client) {
     try {
         webhook = await getOrCreateWebhook(shadowChannel, client);
     } catch (err) {
-        logger.error("Failed to get/create webhook", {
+        // Shadow channels are created with @everyone denied ViewChannel. If the
+        // bot has no explicit override here (older setups), it can't manage
+        // webhooks — grant itself access once and retry.
+        logger.warn("Webhook access failed — self-healing shadow channel permissions", {
             guildId: guild.id,
             shadowChannelId,
             error: err.message,
         });
-        return;
+        try {
+            await shadowChannel.permissionOverwrites.edit(guild.members.me, {
+                ViewChannel: true,
+                ManageWebhooks: true,
+                SendMessages: true,
+                EmbedLinks: true,
+            });
+            webhook = await getOrCreateWebhook(shadowChannel, client);
+        } catch (retryErr) {
+            logger.error("Failed to get/create webhook after self-heal", {
+                guildId: guild.id,
+                shadowChannelId,
+                error: retryErr.message,
+            });
+            return;
+        }
     }
 
     try {
@@ -214,7 +231,7 @@ export async function shadowMessage(message, classification, client) {
             authorTag: author.tag,
             authorId: author.id,
             content,
-            channelName: channel,
+            channelName: `#${channel.name}`,
             classification,
             messageId: message.id,
         });
@@ -230,14 +247,28 @@ export async function shadowMessage(message, classification, client) {
                 .setLabel("Reject")
                 .setEmoji(EMOJI.REJECT)
                 .setStyle(ButtonStyle.Danger),
-            new ButtonBuilder()
-                .setCustomId(`shadowban_release_${shadowMessageId}`)
-                .setLabel("Release")
-                .setEmoji(EMOJI.RELEASE)
-                .setStyle(ButtonStyle.Secondary),
         );
 
-        await modQueueChannel.send({ embeds: [embed], components: [row] });
+        try {
+            await modQueueChannel.send({ embeds: [embed], components: [row] });
+        } catch (sendErr) {
+            // #mod-queue is created with @everyone denied ViewChannel and no
+            // allow-override for the bot, so a non-admin bot can't post here.
+            // (The shadow repost still works because it goes through a webhook.)
+            // Grant ourselves access once, then retry.
+            logger.warn("Mod queue send failed — self-healing channel permissions", {
+                guildId: guild.id,
+                modQueueChannelId: settings.mod_queue_channel_id,
+                error: sendErr.message,
+            });
+            await modQueueChannel.permissionOverwrites.edit(guild.members.me, {
+                ViewChannel: true,
+                SendMessages: true,
+                EmbedLinks: true,
+            });
+            await modQueueChannel.send({ embeds: [embed], components: [row] });
+        }
+
         logger.info(`📋 Pushed to mod queue`, {
             guildId: guild.id,
             shadowId: shadowMessageId,
@@ -245,6 +276,7 @@ export async function shadowMessage(message, classification, client) {
     } catch (err) {
         logger.error("Failed to post to mod queue", {
             guildId: guild.id,
+            modQueueChannelId: settings.mod_queue_channel_id,
             error: err.message,
         });
     }
@@ -255,7 +287,7 @@ export async function shadowMessage(message, classification, client) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Handle Approve / Reject / Release button clicks from the mod queue.
+ * Handle Approve / Reject button clicks from the mod queue.
  * @param {import('discord.js').ButtonInteraction} interaction
  */
 export async function handleModQueueButton(interaction) {
@@ -264,6 +296,12 @@ export async function handleModQueueButton(interaction) {
     const parts = interaction.customId.split("_");
     const action = parts[1];
     const shadowId = parts.slice(2).join("_");
+
+    if (action !== "approve" && action !== "reject") {
+        return interaction.editReply({
+            embeds: [errorEmbed("Unavailable", "That action is no longer supported.")],
+        });
+    }
 
     const record = await getShadowMessageByShadowId(shadowId);
 
@@ -366,32 +404,6 @@ export async function handleModQueueButton(interaction) {
             ],
         });
     }
-
-    // ── Release: restore group role but don't repost ──────────────────────────
-    if (action === "release") {
-        await restoreGroupRoles(
-            guild,
-            record.author_id,
-            record.shadow_role_id,
-            record.group_role_id,
-        );
-        await updateShadowMessageStatus(
-            shadowId,
-            SHADOW_STATUS.RELEASED,
-            null,
-            interaction.user.id,
-        );
-        await disableQueueButtons(interaction, "release", interaction.user);
-
-        return interaction.editReply({
-            embeds: [
-                successEmbed(
-                    "Released",
-                    `<@${record.author_id}> restored to their group. Message not reposted.`,
-                ),
-            ],
-        });
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -437,7 +449,7 @@ async function getOrCreateWebhook(channel, client) {
 
 /**
  * Remove the shadow role and restore the original group role for a user.
- * Called on Approve and Release actions.
+ * Called on the Approve action.
  */
 async function restoreGroupRoles(guild, userId, shadowRoleId, groupRoleId) {
     try {
@@ -489,7 +501,6 @@ async function disableQueueButtons(interaction, action, moderator) {
         const statusMap = {
             approve: { label: `${EMOJI.APPROVE} Approved`, color: COLORS.SUCCESS },
             reject:  { label: `${EMOJI.REJECT} Rejected`,  color: COLORS.ERROR },
-            release: { label: `${EMOJI.RELEASE} Released`, color: COLORS.NEUTRAL },
         };
         const { label, color } = statusMap[action];
 

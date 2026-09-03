@@ -107,6 +107,18 @@ export async function handleAuditFix(interaction) {
   const fixes = [];
   const newMappings = [];
 
+  // Explicit access for the bot on its own shadow channels — @everyone is denied
+  // ViewChannel and a non-admin bot doesn't bypass that (needed for webhooks).
+  const botOverwrite = {
+    id: guild.members.me.id,
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ManageWebhooks,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks,
+    ],
+  };
+
   try {
     // ── Fix mod queue if missing ──────────────────────────────────────────────
     let modQueueChannel = report.modQueue.channel;
@@ -117,12 +129,28 @@ export async function handleAuditFix(interaction) {
         type: ChannelType.GuildText,
         permissionOverwrites: [
           { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+          {
+            id: guild.members.me.id,
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.SendMessages,
+              PermissionFlagsBits.EmbedLinks,
+            ],
+          },
         ],
-        topic: 'Pending shadowban reviews. Use the buttons to Approve, Reject, or Release.',
+        topic: 'Pending shadowban reviews. Use the buttons to Approve or Reject.',
         reason: 'Shadowban bot — audit fix',
       });
       await upsertGuildSettings(guild.id, { mod_queue_channel_id: modQueueChannel.id });
       fixes.push(`${EMOJI.SUCCESS} Created **#mod-queue**`);
+    } else if (!modQueueChannel.permissionsFor(guild.members.me)?.has(PermissionFlagsBits.SendMessages)) {
+      // Existing #mod-queue the bot can't post in — grant it access.
+      await modQueueChannel.permissionOverwrites.edit(guild.members.me, {
+        ViewChannel: true,
+        SendMessages: true,
+        EmbedLinks: true,
+      });
+      fixes.push(`${EMOJI.SUCCESS} Restored bot access to **#mod-queue**`);
     }
 
     // ── Fix per-group issues ──────────────────────────────────────────────────
@@ -155,6 +183,7 @@ export async function handleAuditFix(interaction) {
             permissionOverwrites: [
               { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
               copyRoleOverwrite(category, groupRole.id, shadowRole.id, [PermissionFlagsBits.ViewChannel]),
+              botOverwrite,
             ],
             reason: 'Shadowban bot — audit fix',
           });
@@ -170,6 +199,17 @@ export async function handleAuditFix(interaction) {
               groupRoleId: groupRole.id,
               shadowRoleId: shadowRole.id,
             });
+
+            // Repair bot access on an existing shadow channel if it's missing.
+            if (!chInfo.shadowChannel.permissionsFor(guild.members.me)?.has(PermissionFlagsBits.ManageWebhooks)) {
+              await chInfo.shadowChannel.permissionOverwrites.edit(guild.members.me, {
+                ViewChannel: true,
+                ManageWebhooks: true,
+                SendMessages: true,
+                EmbedLinks: true,
+              });
+              fixes.push(`${EMOJI.SUCCESS} Restored bot access to shadow channel **#${chInfo.channel.name}**`);
+            }
             continue;
           }
 
@@ -181,6 +221,7 @@ export async function handleAuditFix(interaction) {
             permissionOverwrites: [
               { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
               copyRoleOverwrite(chInfo.channel, groupRole.id, shadowRole.id),
+              botOverwrite,
             ],
             topic: `Shadow mirror of #${chInfo.channel.name}.`,
             reason: 'Shadowban bot — audit fix',

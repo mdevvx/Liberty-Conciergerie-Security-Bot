@@ -165,6 +165,19 @@ export async function handleRoleSelect(interaction) {
       logger.info(`Created shadow role: ${shadowRoleName}`, { guildId: guild.id });
     }
 
+    // The bot needs explicit access to its own shadow channels — @everyone is
+    // denied ViewChannel, and a non-admin bot doesn't bypass that. Without this
+    // it can't create the repost webhook.
+    const botOverwrite = {
+      id: guild.members.me.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.ManageWebhooks,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.EmbedLinks,
+      ],
+    };
+
     // ── Create shadow category ───────────────────────────────────────────────
     const shadowCategory = await guild.channels.create({
       name: `🔒 ${originalCategory.name}`,
@@ -172,6 +185,7 @@ export async function handleRoleSelect(interaction) {
       permissionOverwrites: [
         { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
         copyRoleOverwrite(originalCategory, groupRole.id, shadowRole.id, [PermissionFlagsBits.ViewChannel]),
+        botOverwrite,
       ],
       reason: 'Shadowban bot — shadow category',
     });
@@ -191,6 +205,7 @@ export async function handleRoleSelect(interaction) {
         permissionOverwrites: [
           { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
           copyRoleOverwrite(channel, groupRole.id, shadowRole.id),
+          botOverwrite,
         ],
         topic: `Shadow mirror of #${channel.name}.`,
         reason: 'Shadowban bot — shadow channel',
@@ -218,8 +233,16 @@ export async function handleRoleSelect(interaction) {
         type: ChannelType.GuildText,
         permissionOverwrites: [
           { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+          {
+            id: guild.members.me.id,
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.SendMessages,
+              PermissionFlagsBits.EmbedLinks,
+            ],
+          },
         ],
-        topic: 'Pending shadowban reviews. Use the buttons to Approve, Reject, or Release.',
+        topic: 'Pending shadowban reviews. Use the buttons to Approve or Reject.',
         reason: 'Shadowban bot — mod queue',
       });
     }
@@ -248,7 +271,7 @@ export async function handleRoleSelect(interaction) {
       '',
       '**Shadowban flow for this group:**',
       `Flagged message → Remove \`${groupRole.name}\` + Add \`${shadowRoleName}\``,
-      `Approve / Release → Remove \`${shadowRoleName}\` + Restore \`${groupRole.name}\``,
+      `Approve → Remove \`${shadowRoleName}\` + Restore \`${groupRole.name}\``,
       '',
       `Run \`/setup\` again to add the next group.`,
     ];

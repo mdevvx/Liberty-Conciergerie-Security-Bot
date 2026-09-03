@@ -164,7 +164,7 @@ export async function execute(interaction, client) {
       return;
     }
 
-    // Mod queue buttons: Approve / Reject / Release
+    // Mod queue buttons: Approve / Reject
     if (interaction.customId.startsWith('shadowban_')) {
       try {
         await handleModQueueButton(interaction);
