@@ -77,7 +77,7 @@ export async function execute(message, client) {
   if (whitelistedRoles.size > 0 && member.roles.cache.some((r) => whitelistedRoles.has(r.id))) return;
 
   // ── Classify ──────────────────────────────────────────────────────────────
-  const classification = await classifyMessage(message.content, settings?.ai_system_prompt ?? null);
+  const classification = await classifyMessage(message.content, settings?.ai_system_prompt ?? null, message.guildId);
 
   if (classification === CLASSIFICATION.SAFE) return;
 

@@ -97,6 +97,33 @@ export function invalidateBotEnabledCache(guildId) {
   _enabledCache.delete(guildId);
 }
 
+// 30-second TTL cache — the logger asks for this on a flush interval, so it
+// must not hit the DB every time. Bust it after /log_channel writes.
+const _logChannelCache = new Map(); // guildId → { value: string|null, until: number }
+
+/**
+ * Return the configured activity-log channel ID for a guild, or null.
+ * @param {string} guildId
+ * @returns {Promise<string|null>}
+ */
+export async function getLogChannelId(guildId) {
+  const hit = _logChannelCache.get(guildId);
+  if (hit && Date.now() < hit.until) return hit.value;
+
+  const settings = await getGuildSettings(guildId);
+  const value = settings?.log_channel_id ?? null;
+  _logChannelCache.set(guildId, { value, until: Date.now() + 30_000 });
+  return value;
+}
+
+/**
+ * Bust the log-channel cache for a guild. Call after /log_channel writes.
+ * @param {string} guildId
+ */
+export function invalidateLogChannelCache(guildId) {
+  _logChannelCache.delete(guildId);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SHADOW MESSAGES
 // Tracks the original → shadow → public message ID chain + mod decisions.
